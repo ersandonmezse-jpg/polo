@@ -1,28 +1,21 @@
 """
 Yapılandırma
 =============
-Yerel geliştirmede bu dosyadaki değerler kullanılır.
-Railway'de (veya başka bir sunucuda) ortam değişkenlerinden okunur.
+Değerler ortam değişkenlerinden (Environment Variables) okunur.
+Railway / Sunucu üzerinde Variables sekmesinden tanımlanır.
 """
 
 import os
 
 # ── Telegram ─────────────────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN",
-    "8860660735:AAFu0gmU_kwBGaETIyhJZ-yXD-0SSOuiB44"
-)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-TELEGRAM_CHAT_ID = os.environ.get(
-    "TELEGRAM_CHAT_ID",
-    "-5529859923"
-)
-
-# ── Google Sheets (varsayılan linkler — panel üzerinden de eklenebilir) ──────
+# ── Google Sheets (Varsayılan boş, panelden veya env üzerinden eklenebilir) ──
 GOOGLE_SHEETS = [
     {
         "name": "Ana Form",
-        "url": "https://docs.google.com/spreadsheets/d/1JrqIsJZ7dnY3RXQFfQS1NGIGqcXDP_bHwbJjleEpE0s/edit?usp=sharing",
+        "url": os.environ.get("DEFAULT_SHEET_URL", "https://docs.google.com/spreadsheets/d/1JrqIsJZ7dnY3RXQFfQS1NGIGqcXDP_bHwbJjleEpE0s/edit?usp=sharing"),
     },
 ]
 
@@ -34,7 +27,6 @@ ADMIN_PIN = os.environ.get("ADMIN_PIN", "1453")
 WEB_PORT = int(os.environ.get("PORT", os.environ.get("WEB_PORT", "5000")))
 
 # ── Railway / Deploy URL ─────────────────────────────────────────────────────
-# Railway otomatik RAILWAY_PUBLIC_DOMAIN verir. Manuel de ayarlanabilir.
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "")
 if not PUBLIC_URL:
     railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
