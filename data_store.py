@@ -25,11 +25,21 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
-# Dosya yolları
-SHEETS_FILE = "sheets_config.json"
-GROUPS_FILE = "groups_config.json"
-SETTINGS_FILE = "settings_config.json"
-STATE_FILE = "sheets_state.json"
+# Kalıcı Veri Klasörü (Railway Volume desteği: RAILWAY_VOLUME_MOUNT_PATH veya DATA_DIR veya /app/data)
+DATA_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.environ.get("DATA_DIR")
+if not DATA_DIR:
+    if os.path.exists("/data"):
+        DATA_DIR = "/data"
+    else:
+        DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Dosya yolları (Kalıcı dizine bağlanır)
+SHEETS_FILE = os.path.join(DATA_DIR, "sheets_config.json")
+GROUPS_FILE = os.path.join(DATA_DIR, "groups_config.json")
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings_config.json")
+STATE_FILE = os.path.join(DATA_DIR, "sheets_state.json")
 STORE_LOCK = threading.Lock()
 
 
