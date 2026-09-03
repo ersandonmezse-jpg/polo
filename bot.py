@@ -62,6 +62,10 @@ from data_store import (
     record_forward_event,
     get_forward_event,
     format_duration,
+    normalize_phone,
+    save_client_profile,
+    check_client_history,
+    log_activity_event,
 )
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -150,7 +154,34 @@ def format_message(entry_number: int, row: dict, col_mapping: dict, sheet_name: 
     kart_limit = html.escape(row.get(col_mapping.get("kullanılabilir_kart_limitiniz", ""), "—"))
     phone = html.escape(row.get(col_mapping.get("phone_number", ""), "—"))
 
+    # MÜŞTERİ GEÇMİŞİ & MÜKERRER BAŞVURU KONTROLÜ
+    history = check_client_history(phone, tc_no)
+    warning_banner = ""
+    if history:
+        days_ago = history.get("days_ago", 0)
+        last_st = history.get("last_status", "Belirtilmemiş")
+        first_date = history.get("first_seen", "")
+        last_note = history.get("last_note", "")
+
+        note_part = f"\n📝 <b>Önceki Not:</b> <i>{html.escape(last_note)}</i>" if last_note else ""
+        warning_banner = (
+            f"⚠️ <b>DİKKAT: ESKİ / MÜKERRER BAŞVURU!</b>\n"
+            f"📅 <b>İlk Başvuru:</b> {first_date} ({days_ago} gün önce)\n"
+            f"📌 <b>Önceki Son Durum:</b> <b>{html.escape(last_st)}</b>{note_part}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+    # Yeni müşteri kaydını veritabanına işle
+    save_client_profile(phone, tc_no, {
+        "calisma_durumu": calisma_durumu,
+        "kart_limit": kart_limit,
+        "sheet": sheet_name,
+        "entry_number": entry_number,
+        "created_time": created_time
+    }, status="Yeni Başvuru")
+
     message = (
+        f"{warning_banner}"
         f"📋 <b>Kayıt #{entry_number}</b> — <i>{html.escape(sheet_name)}</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🕐 <b>Tarih:</b> {created_time}\n"
@@ -573,7 +604,7 @@ def listen_telegram_updates():
                             reply_markup=None
                         )
 
-                        # SAHA GRUBUNA ONAY MESAJI
+                        # SAHA GRUBUNA ONAY / BLOKE / DÜŞMEDİ BUTONLARIYLA MESAJ
                         settings = get_settings()
                         saha_chat_id = settings.get("saha_group_id")
                         if saha_chat_id:
@@ -581,6 +612,7 @@ def listen_telegram_updates():
                                 "inline_keyboard": [
                                     [
                                         {"text": "✅ Onay", "callback_data": f"saha_onay:{sheet_id}:{row_num}:{chat_id}:{message_id}:{amt_str}"},
+                                        {"text": "🚫 Bloke", "callback_data": f"saha_bloke:{sheet_id}:{row_num}:{chat_id}:{message_id}:{amt_str}"},
                                         {"text": "⏳ Düşmedi", "callback_data": f"saha_dusmedi:{sheet_id}:{row_num}:{chat_id}:{message_id}:{amt_str}"}
                                     ]
                                 ]
@@ -596,8 +628,43 @@ def listen_telegram_updates():
                                 chat_id=saha_chat_id,
                                 reply_markup=saha_confirm_kb
                             )
+                            # KPI için atış aktivitesi kaydet
+                            amt_clean = float(re.sub(r"[^\d.]", "", amt_str.replace(".", "").replace(",", ".")) or 0)
+                            log_activity_event("kredi", sheet_id, row_num, user_name=user_tag, amount=amt_clean)
 
-                    # 1.6.E) Sahacı "⏳ Düşmedi" Dedi -> İLK GRUBA BİLGİ VER & SAHAYA "Şimdi Düştü" BUTONU BIRAK
+                    # 1.6.E-1) Sahacı "🚫 Bloke" Dedi -> İLK GRUBA BİLGİ VER & PROFİLE BLOKE İŞLE
+                    elif cq_data.startswith("saha_bloke:"):
+                        parts = cq_data.split(":")
+                        sheet_id = parts[1]
+                        row_num = int(parts[2])
+                        origin_chat_id = parts[3]
+                        origin_msg_id = int(parts[4])
+                        amt_str = parts[5]
+
+                        set_record_status(sheet_id, row_num, "🚫 Bloke Oldu", user_tag)
+                        log_activity_event("bloke", sheet_id, row_num, user_name=user_tag)
+
+                        answer_callback_query(cq_id, "İşlem Bloke Oldu olarak kaydedildi ve bildirildi.", show_alert=True)
+                        edit_telegram_message(
+                            chat_id, message_id,
+                            original_text + f"\n\n🚫 <b>BLOKE OLDU</b> ({html.escape(user_tag)})",
+                            reply_markup=None
+                        )
+
+                        # İlk gruba acil bloke uyarısı
+                        send_telegram_message(
+                            f"🚫 <b>DİKKAT: İŞLEM / HESAP BLOKE OLDU!</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📋 <b>Kayıt:</b> #{row_num}\n"
+                            f"💰 <b>Tutar:</b> {amt_str}\n"
+                            f"👤 <b>İşaretleyen:</b> {html.escape(user_tag)}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"⚠️ <i>Hesaba bloke konulduğu için işlem iptal edilmiştir. Müşteriye bilgi veriniz.</i>",
+                            chat_id=origin_chat_id,
+                            reply_to_message_id=origin_msg_id
+                        )
+
+                    # 1.6.E-2) Sahacı "⏳ Düşmedi" Dedi -> İLK GRUBA BİLGİ VER & SAHAYA "Şimdi Düştü" BUTONU BIRAK
                     elif cq_data.startswith("saha_dusmedi:"):
                         parts = cq_data.split(":")
                         sheet_id = parts[1]
@@ -646,10 +713,12 @@ def listen_telegram_updates():
                         saha_hakedis = (raw_amount * rate) / 100.0
                         net_kalan = raw_amount - saha_hakedis
 
+                        log_activity_event("onay", sheet_id, row_num, user_name=user_tag, amount=raw_amount)
+
                         answer_callback_query(cq_id, "İşlem başarıyla onaylandı! ✅", show_alert=True)
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + f"\n\n✅ <b>Onaylandı</b> ({html.escape(user_tag)})\n💰 Hakediş (%{rate:g}): {saha_hakedis:,.0f} TL",
+                            original_text + f"\n\n✅ <b>Onaylandı</b> ({html.escape(user_tag)})\n💰 Hakediş (%{rate:g}): {saha_hakedis:,.0f} TL",
                             reply_markup=None
                         )
 

@@ -40,7 +40,214 @@ SHEETS_FILE = os.path.join(DATA_DIR, "sheets_config.json")
 GROUPS_FILE = os.path.join(DATA_DIR, "groups_config.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings_config.json")
 STATE_FILE = os.path.join(DATA_DIR, "sheets_state.json")
+CLIENTS_FILE = os.path.join(DATA_DIR, "clients_db.json")
+ACTIVITY_LOG_FILE = os.path.join(DATA_DIR, "activity_log.json")
 STORE_LOCK = threading.Lock()
+
+
+# ── Telefon & Müşteri Geçmiş Veritabanı (CRM & Mükerrer Başvuru) ──────────────
+
+def normalize_phone(phone_raw: str) -> str:
+    """Telefon numarasını standart 10 haneli (örn: 5321234567) formata getirir."""
+    if not phone_raw:
+        return ""
+    digits = re.sub(r"\D", "", str(phone_raw))
+    if digits.startswith("90") and len(digits) == 12:
+        digits = digits[2:]
+    elif digits.startswith("0") and len(digits) == 11:
+        digits = digits[1:]
+    return digits
+
+
+def load_clients_db() -> dict:
+    with STORE_LOCK:
+        try:
+            if os.path.exists(CLIENTS_FILE):
+                with open(CLIENTS_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+
+
+def save_clients_db(db: dict):
+    with STORE_LOCK:
+        with open(CLIENTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(db, f, ensure_ascii=False, indent=2)
+
+
+def save_client_profile(phone: str, tc_no: str, extra_data: dict, status: str = "", note: str = ""):
+    """Müşterinin başvurusunu veya son durumunu telefon ve TC bazlı kalıcı veri tabanına kazır."""
+    clean_phone = normalize_phone(phone)
+    if not clean_phone and not tc_no:
+        return
+
+    primary_key = clean_phone or str(tc_no).strip()
+    db = load_clients_db()
+
+    now_ts = time.time()
+    now_date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    profile = db.get(primary_key, {
+        "phone": clean_phone,
+        "tc_no": str(tc_no).strip(),
+        "first_seen": now_date_str,
+        "first_timestamp": now_ts,
+        "history": [],
+        "last_status": "",
+        "last_note": "",
+        "last_updated": now_date_str
+    })
+
+    if status:
+        profile["last_status"] = status
+    if note:
+        profile["last_note"] = note
+    profile["last_updated"] = now_date_str
+
+    # Başvuru / Etkileşim geçmişine ekle
+    history_entry = {
+        "date": now_date_str,
+        "timestamp": now_ts,
+        "status": status or profile.get("last_status", "Yeni Başvuru"),
+        "note": note,
+        "details": extra_data
+    }
+    profile.setdefault("history", []).append(history_entry)
+
+    db[primary_key] = profile
+    save_clients_db(db)
+
+
+def check_client_history(phone: str, tc_no: str) -> dict | None:
+    """Telefon veya TC ile daha önce başvuru yapılmış mı kontrol eder."""
+    clean_phone = normalize_phone(phone)
+    db = load_clients_db()
+
+    profile = None
+    if clean_phone and clean_phone in db:
+        profile = db[clean_phone]
+    elif tc_no and str(tc_no).strip() in db:
+        profile = db[str(tc_no).strip()]
+
+    if not profile or not profile.get("history"):
+        return None
+
+    # En son veya olumsuz/bloke durumunu analiz et
+    last_status = profile.get("last_status", "")
+    last_note = profile.get("last_note", "")
+    first_seen = profile.get("first_seen", "")
+    last_updated = profile.get("last_updated", "")
+    total_apps = len(profile.get("history", []))
+
+    # Gün farkı
+    first_ts = profile.get("first_timestamp", time.time())
+    days_ago = int((time.time() - first_ts) // 86400)
+
+    return {
+        "is_returning": total_apps > 1,
+        "total_apps": total_apps,
+        "first_seen": first_seen,
+        "last_updated": last_updated,
+        "days_ago": days_ago,
+        "last_status": last_status,
+        "last_note": last_note,
+    }
+
+
+# ── Aktivite & Raporlama Hafızası (Dashboard KPI) ───────────────────────────
+
+def log_activity_event(event_type: str, sheet_id: str, row_num: int, group_name: str = "", user_name: str = "", amount: float = 0.0, extra: str = ""):
+    """Her aranma, kredi düşme, onay, bloke veya olumsuz etkileşimini tarih damgalı kaydeder."""
+    with STORE_LOCK:
+        events = []
+        try:
+            if os.path.exists(ACTIVITY_LOG_FILE):
+                with open(ACTIVITY_LOG_FILE, "r", encoding="utf-8") as f:
+                    events = json.load(f)
+        except Exception:
+            events = []
+
+        now_dt = datetime.now()
+        events.append({
+            "type": event_type,  # 'call', 'kredi', 'onay', 'bloke', 'olumsuz', 'cevapsiz', 'forward'
+            "sheet_id": sheet_id,
+            "row_num": row_num,
+            "group_name": group_name,
+            "user_name": user_name,
+            "amount": amount,
+            "extra": extra,
+            "timestamp": now_dt.timestamp(),
+            "date": now_dt.strftime("%Y-%m-%d"),
+            "time": now_dt.strftime("%H:%M:%S")
+        })
+
+        # Son 10,000 olayı sakla
+        if len(events) > 10000:
+            events = events[-10000:]
+
+        try:
+            with open(ACTIVITY_LOG_FILE, "w", encoding="utf-8") as f:
+                json.dump(events, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+def get_dashboard_metrics(start_date_str: str = None, end_date_str: str = None) -> dict:
+    """Tarih filtresine göre KPI metriklerini hesaplar (Bugün, Dün, Belirli Tarih Aralığı)."""
+    with STORE_LOCK:
+        events = []
+        try:
+            if os.path.exists(ACTIVITY_LOG_FILE):
+                with open(ACTIVITY_LOG_FILE, "r", encoding="utf-8") as f:
+                    events = json.load(f)
+        except Exception:
+            events = []
+
+    # Tarih filtresi uygula (YYYY-MM-DD)
+    if start_date_str and end_date_str:
+        filtered = [e for e in events if start_date_str <= e.get("date", "") <= end_date_str]
+    elif start_date_str:
+        filtered = [e for e in events if e.get("date", "") == start_date_str]
+    else:
+        # Varsayılan: Bugün
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        filtered = [e for e in events if e.get("date", "") == today_str]
+
+    total_data_worked = len(filtered)
+    groups_active = set(e.get("group_name") for e in filtered if e.get("group_name"))
+    
+    kredi_events = [e for e in filtered if e.get("type") == "kredi"]
+    kredi_count = len(kredi_events)
+    kredi_total_amt = sum(e.get("amount", 0.0) for e in kredi_events)
+
+    onay_events = [e for e in filtered if e.get("type") == "onay"]
+    onay_count = len(onay_events)
+    onay_total_amt = sum(e.get("amount", 0.0) for e in onay_events)
+
+    bloke_events = [e for e in filtered if e.get("type") == "bloke"]
+    bloke_count = len(bloke_events)
+
+    olumsuz_events = [e for e in filtered if e.get("type") in ("olumsuz", "kacti")]
+    olumsuz_count = len(olumsuz_events)
+
+    cevapsiz_events = [e for e in filtered if e.get("type") == "cevapsiz"]
+    cevapsiz_count = len(cevapsiz_events)
+
+    return {
+        "filter_start": start_date_str or datetime.now().strftime("%Y-%m-%d"),
+        "filter_end": end_date_str or datetime.now().strftime("%Y-%m-%d"),
+        "total_data_worked": total_data_worked,
+        "active_groups_count": len(groups_active),
+        "kredi_count": kredi_count,
+        "kredi_total_amt": kredi_total_amt,
+        "onay_count": onay_count,
+        "onay_total_amt": onay_total_amt,
+        "bloke_count": bloke_count,
+        "olumsuz_count": olumsuz_count,
+        "cevapsiz_count": cevapsiz_count,
+        "groups_list": list(groups_active)
+    }
 
 
 def get_settings() -> dict:

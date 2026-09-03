@@ -41,6 +41,7 @@ from data_store import (
     get_record_status,
     get_forward_event,
     format_duration,
+    get_dashboard_metrics,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -469,32 +470,79 @@ DASHBOARD_HTML = """
             border-color: var(--btn-color);
         }
 
-        /* ── Stats Bar ── */
+        /* ── KPI & Dashboard Stats Bar ── */
+        .date-filter-bar {
+            padding: 10px 14px 4px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .filter-buttons {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .f-btn {
+            padding: 5px 11px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--card-bg);
+            color: var(--hint-color);
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.15s;
+        }
+        .f-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+        .f-btn.active {
+            background: var(--btn-color);
+            color: #fff;
+            border-color: var(--btn-color);
+        }
         .stats-bar {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
             gap: 8px;
-            padding: 12px 14px 4px;
+            padding: 8px 14px 4px;
+        }
+        @media (min-width: 768px) {
+            .stats-bar {
+                grid-template-columns: repeat(4, 1fr);
+            }
         }
         .stat-card {
             background: var(--card-bg);
             border: 1px solid var(--border-color);
             border-radius: 12px;
-            padding: 10px 14px;
+            padding: 10px 12px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
         }
         .stat-card .s-label {
-            font-size: 11px;
+            font-size: 10px;
             color: var(--hint-color);
             text-transform: uppercase;
             letter-spacing: 0.4px;
-            font-weight: 600;
+            font-weight: 700;
         }
         .stat-card .s-value {
-            font-size: 20px;
+            font-size: 17px;
             font-weight: 800;
             margin-top: 2px;
             color: var(--text-color);
         }
+        .stat-card.green { border-color: rgba(34, 197, 94, 0.3); background: rgba(34, 197, 94, 0.05); }
+        .stat-card.green .s-value { color: #4ade80; }
+        .stat-card.red { border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.05); }
+        .stat-card.red .s-value { color: #f87171; }
+        .stat-card.yellow { border-color: rgba(234, 179, 8, 0.3); background: rgba(234, 179, 8, 0.05); }
+        .stat-card.yellow .s-value { color: #facc15; }
+        .stat-card.blue { border-color: rgba(99, 102, 241, 0.3); background: rgba(99, 102, 241, 0.05); }
+        .stat-card.blue .s-value { color: #818cf8; }
 
         /* ── Sheet Tabs ── */
         .tabs-scroller {
@@ -900,15 +948,43 @@ DASHBOARD_HTML = """
             </div>
         </div>
 
-        <!-- Stats Bar -->
+        <!-- Date Filter Bar -->
+        <div class="date-filter-bar">
+            <span style="font-size:11px; font-weight:700; color:var(--hint-color); text-transform:uppercase;">📅 Raporlama:</span>
+            <div class="filter-buttons">
+                <a href="/?filter=today" class="f-btn {% if active_filter == 'today' %}active{% endif %}">Bugün</a>
+                <a href="/?filter=yesterday" class="f-btn {% if active_filter == 'yesterday' %}active{% endif %}">Dün</a>
+                <a href="/?filter=week" class="f-btn {% if active_filter == 'week' %}active{% endif %}">Bu Hafta</a>
+                <a href="/?filter=month" class="f-btn {% if active_filter == 'month' %}active{% endif %}">Bu Ay</a>
+                <a href="/?filter=all" class="f-btn {% if active_filter == 'all' %}active{% endif %}">Tüm Zamanlar</a>
+            </div>
+        </div>
+
+        <!-- Rich KPI Stats Bar -->
         <div class="stats-bar">
-            <div class="stat-card">
-                <div class="s-label">Toplam Kayıt</div>
-                <div class="s-value" id="stat-total-rows">{{ total_rows }}</div>
+            <div class="stat-card blue">
+                <div class="s-label">📞 İşlenen Data</div>
+                <div class="s-value">{{ kpi.total_data_worked }} <span style="font-size:11px; font-weight:500; color:var(--hint-color);">/ {{ total_rows }}</span></div>
             </div>
             <div class="stat-card">
-                <div class="s-label">Aktif Sheet</div>
-                <div class="s-value">{{ active_sheets_count }} / {{ total_sheets }}</div>
+                <div class="s-label">👥 Aktif Grup</div>
+                <div class="s-value">{{ kpi.active_groups_count }} <span style="font-size:11px; font-weight:500; color:var(--hint-color);">Grup</span></div>
+            </div>
+            <div class="stat-card yellow">
+                <div class="s-label">💳 Kredi Düştü</div>
+                <div class="s-value">{{ kpi.kredi_count }} <span style="font-size:11px; font-weight:600; color:#facc15;">({{ kpi.kredi_total_amt:,.0f }} TL)</span></div>
+            </div>
+            <div class="stat-card green">
+                <div class="s-label">✅ Onaylanan</div>
+                <div class="s-value">{{ kpi.onay_count }} <span style="font-size:11px; font-weight:600; color:#4ade80;">({{ kpi.onay_total_amt:,.0f }} TL)</span></div>
+            </div>
+            <div class="stat-card red">
+                <div class="s-label">🚫 Bloke Oldu</div>
+                <div class="s-value">{{ kpi.bloke_count }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="s-label">🔴 Olumsuz / Kaçan</div>
+                <div class="s-value">{{ kpi.olumsuz_count }}</div>
             </div>
         </div>
 
@@ -1377,6 +1453,30 @@ def logout():
 @app.route("/")
 @login_required
 def dashboard():
+    filter_mode = request.args.get("filter", "today")
+    now_dt = datetime.now()
+    start_date = None
+    end_date = None
+
+    if filter_mode == "today":
+        start_date = end_date = now_dt.strftime("%Y-%m-%d")
+    elif filter_mode == "yesterday":
+        yest = now_dt.fromtimestamp(now_dt.timestamp() - 86400)
+        start_date = end_date = yest.strftime("%Y-%m-%d")
+    elif filter_mode == "week":
+        week_ago = now_dt.fromtimestamp(now_dt.timestamp() - (7 * 86400))
+        start_date = week_ago.strftime("%Y-%m-%d")
+        end_date = now_dt.strftime("%Y-%m-%d")
+    elif filter_mode == "month":
+        month_ago = now_dt.fromtimestamp(now_dt.timestamp() - (30 * 86400))
+        start_date = month_ago.strftime("%Y-%m-%d")
+        end_date = now_dt.strftime("%Y-%m-%d")
+    elif filter_mode == "all":
+        start_date = "2020-01-01"
+        end_date = "2099-12-31"
+
+    kpi = get_dashboard_metrics(start_date, end_date)
+
     all_sheets_raw = get_sheets()
     sheets_data = []
     total_rows = 0
@@ -1459,6 +1559,8 @@ def dashboard():
         active_sheets_count=active_count,
         total_rows=total_rows,
         all_groups=all_groups,
+        kpi=kpi,
+        active_filter=filter_mode,
     )
 
 
