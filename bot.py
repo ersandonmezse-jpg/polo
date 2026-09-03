@@ -173,6 +173,7 @@ def format_message(entry_number: int, row: dict, col_mapping: dict, sheet_name: 
 
     calisma_durumu = html.escape(row.get(col_mapping.get("çalışma_durumu", ""), "—"))
     tc_no = html.escape(row.get(col_mapping.get("t.c_numaranız", ""), "—"))
+    kart_limit = html.escape(row.get(col_mapping.get("kullanılabilir_kart_limitiniz", ""), "—"))
     # Telefon numarasını temizle (varsa p: ön ekini kaldır) ve tam açık göster
     raw_phone = str(row.get(col_mapping.get("phone_number", ""), "") or "").strip()
     if raw_phone.startswith("p:"):

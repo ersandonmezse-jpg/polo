@@ -987,11 +987,11 @@ DASHBOARD_HTML = """
             </div>
             <div class="stat-card yellow">
                 <div class="s-label">💳 Kredi Düştü</div>
-                <div class="s-value">{{ kpi.kredi_count }} <span style="font-size:11px; font-weight:600; color:#facc15;">({{ kpi.kredi_total_amt:,.0f }} TL)</span></div>
+                <div class="s-value">{{ kpi.kredi_count }} <span style="font-size:11px; font-weight:600; color:#facc15;">({{ "{:,.0f}".format(kpi.kredi_total_amt or 0) }} TL)</span></div>
             </div>
             <div class="stat-card green">
                 <div class="s-label">✅ Onaylanan</div>
-                <div class="s-value">{{ kpi.onay_count }} <span style="font-size:11px; font-weight:600; color:#4ade80;">({{ kpi.onay_total_amt:,.0f }} TL)</span></div>
+                <div class="s-value">{{ kpi.onay_count }} <span style="font-size:11px; font-weight:600; color:#4ade80;">({{ "{:,.0f}".format(kpi.onay_total_amt or 0) }} TL)</span></div>
             </div>
             <div class="stat-card red">
                 <div class="s-label">🚫 Bloke Oldu</div>

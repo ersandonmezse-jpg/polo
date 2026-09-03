@@ -28,4 +28,7 @@ cloudflared.exe
 last_sent_index.txt
 sheets_state.json
 sheets_config.json
+clients_db.json
+groups_config.json
+data_events.json
 *.log
