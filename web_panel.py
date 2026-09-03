@@ -1472,6 +1472,13 @@ def api_add_sheet():
     url = data.get("url", "")
     success, msg = add_sheet(name, url)
     if success:
+        # Yeni eklenen sheet'i hemen tara ve bekleyen satırları gruba at!
+        try:
+            from bot import check_and_send_sheet, extract_sheet_id
+            sheet_id = extract_sheet_id(url)
+            threading.Thread(target=check_and_send_sheet, args=({"name": name or "Form", "url": url, "id": sheet_id},), daemon=True).start()
+        except Exception as e:
+            logger.error(f"Anlık sheet çekme hatası: {e}")
         return jsonify({"ok": True, "message": msg})
     return jsonify({"ok": False, "error": msg}), 400
 

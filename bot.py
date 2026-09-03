@@ -1128,11 +1128,18 @@ def listen_telegram_updates():
                             success, msg_resp = add_sheet(sheet_name, clean_url)
 
                             if success:
+                                # Hemen yeni eklenen sheet'i tara ve gönder!
+                                try:
+                                    s_id = extract_sheet_id(clean_url)
+                                    threading.Thread(target=check_and_send_sheet, args=({"name": sheet_name, "url": clean_url, "id": s_id},), daemon=True).start()
+                                except Exception:
+                                    pass
+
                                 reply_msg = (
                                     f"✅ <b>Google Sheets Başarıyla Eklendi!</b>\n\n"
                                     f"📝 <b>İsim:</b> {sheet_name}\n"
                                     f"🔗 <b>Link:</b> {clean_url}\n\n"
-                                    f"Yeni kayıtlar etkileşim butonlarıyla birlikte gönderilecektir."
+                                    f"Kayıtlar kontrol ediliyor ve etkileşim butonlarıyla gönderiliyor..."
                                 )
                             else:
                                 reply_msg = f"ℹ️ {msg_resp}"
