@@ -19,7 +19,7 @@ CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "1200"))  # 20 dakika
 
 # ── Web Panel ────────────────────────────────────────────────────────────────
 ADMIN_PIN = os.environ.get("ADMIN_PIN", "1453")
-WEB_PORT = int(os.environ.get("PORT", os.environ.get("WEB_PORT", "5000")))
+WEB_PORT = int(os.environ.get("PORT", os.environ.get("WEB_PORT", "8080")))
 
 # ── Railway / Deploy URL ─────────────────────────────────────────────────────
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "")
