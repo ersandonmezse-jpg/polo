@@ -63,6 +63,8 @@ from data_store import (
     get_forward_event,
     format_duration,
     get_original_message_id,
+    get_next_global_id,
+    get_record_global_id,
     normalize_phone,
     save_client_profile,
     check_client_history,
@@ -1311,7 +1313,9 @@ def check_and_send_sheet(sheet_config: dict):
 
     for i, row in enumerate(new_rows):
         entry_number = last_sent + i
-        message = format_message(entry_number, row, col_mapping, sheet_name)
+        global_lead_id = get_next_global_id()
+
+        message = format_message(global_lead_id, row, col_mapping, sheet_name)
         keyboard = build_record_keyboard(sheet_id, entry_number)
 
         phone = row.get(col_mapping.get("phone_number", ""), "")
@@ -1319,7 +1323,7 @@ def check_and_send_sheet(sheet_config: dict):
 
         success, msg_id = send_telegram_message(message, reply_markup=keyboard)
         if success:
-            record_message_sent(sheet_id, entry_number, msg_id or 0, phone=phone, tc_no=tc_no)
+            record_message_sent(sheet_id, entry_number, msg_id or 0, phone=phone, tc_no=tc_no, global_id=global_lead_id)
             time.sleep(2)
         else:
             logger.error(f"[{sheet_name}] Satır #{entry_number} gönderilemedi.")

@@ -42,6 +42,7 @@ from data_store import (
     get_forward_event,
     format_duration,
     get_dashboard_metrics,
+    get_record_global_id,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -1064,7 +1065,7 @@ DASHBOARD_HTML = """
                                 <span>📋</span>
                                 <span>Tümünü Kopyala</span>
                             </button>
-                            <button type="button" class="act-btn delete" onclick="deleteRecordPrompt('{{ sheet.id }}', '{{ row.num }}')">
+                            <button type="button" class="act-btn delete" onclick="deleteRecordPrompt('{{ sheet.id }}', '{{ row.raw_row_index }}')">
                                 <span>🗑️</span>
                                 <span>Sil (Chatten de)</span>
                             </button>
@@ -1554,8 +1555,11 @@ def dashboard():
                         diff = max(0, time.time() - fwd_ev.get("fwd_timestamp", time.time()))
                         stay_dur = format_duration(diff)
 
+                    global_id = get_record_global_id(sheet_id, i)
+
                     sheet_info["rows"].append({
-                        "num": i,
+                        "num": global_id,
+                        "raw_row_index": i,
                         "created_time": convert_to_turkey_time(created_raw),
                         "calisma_durumu": row.get(col_mapping.get("çalışma_durumu", ""), "—"),
                         "tc_no": row.get(col_mapping.get("t.c_numaranız", ""), "—"),

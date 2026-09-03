@@ -554,10 +554,20 @@ def get_last_sent(sheet_id: str) -> int:
     return state.get(sheet_id, {}).get("last_sent", 0)
 
 
-def record_message_sent(sheet_id: str, row_num: int, message_id: int, phone: str = "", tc_no: str = ""):
+def get_next_global_id() -> int:
+    """Tüm sheetler boyunca kümülatif artan global kayıt numarasını (Örn: #1, #2, #550) döner ve sayacı 1 artırır."""
+    state = load_state()
+    current_counter = state.get("__global_lead_counter__", 0)
+    next_counter = current_counter + 1
+    state["__global_lead_counter__"] = next_counter
+    save_state(state)
+    return next_counter
+
+
+def record_message_sent(sheet_id: str, row_num: int, message_id: int, phone: str = "", tc_no: str = "", global_id: int = None):
     state = load_state()
     if sheet_id not in state:
-        state[sheet_id] = {"last_sent": 0, "messages": {}, "statuses": {}, "clients": {}, "deleted": []}
+        state[sheet_id] = {"last_sent": 0, "messages": {}, "statuses": {}, "clients": {}, "global_ids": {}, "deleted": []}
 
     sheet_st = state[sheet_id]
     if "messages" not in sheet_st:
@@ -566,14 +576,27 @@ def record_message_sent(sheet_id: str, row_num: int, message_id: int, phone: str
         sheet_st["statuses"] = {}
     if "clients" not in sheet_st:
         sheet_st["clients"] = {}
+    if "global_ids" not in sheet_st:
+        sheet_st["global_ids"] = {}
     if "deleted" not in sheet_st:
         sheet_st["deleted"] = []
 
     sheet_st["last_sent"] = max(sheet_st.get("last_sent", 0), row_num + 1)
     sheet_st["messages"][str(row_num)] = message_id
+    if global_id:
+        sheet_st["global_ids"][str(row_num)] = global_id
+        state["__global_lead_counter__"] = max(state.get("__global_lead_counter__", 0), global_id)
+
     if phone or tc_no:
         sheet_st["clients"][str(row_num)] = {"phone": phone, "tc_no": tc_no}
     save_state(state)
+
+
+def get_record_global_id(sheet_id: str, row_num: int) -> int:
+    """Kaydın global kayıt numarasını döner, yoksa yerel row_num döner."""
+    state = load_state()
+    g_id = state.get(sheet_id, {}).get("global_ids", {}).get(str(row_num))
+    return int(g_id) if g_id else (row_num + 1)
 
 
 def set_record_status(sheet_id: str, row_num: int, status: str, user_name: str = "", note: str = ""):
