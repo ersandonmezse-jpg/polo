@@ -597,7 +597,7 @@ def listen_telegram_updates():
                                 reply_markup=saha_confirm_kb
                             )
 
-                    # 1.6.E) Sahacı "⏳ Düşmedi" Dedi
+                    # 1.6.E) Sahacı "⏳ Düşmedi" Dedi -> İLK GRUBA BİLGİ VER & SAHAYA "Şimdi Düştü" BUTONU BIRAK
                     elif cq_data.startswith("saha_dusmedi:"):
                         parts = cq_data.split(":")
                         sheet_id = parts[1]
@@ -607,16 +607,23 @@ def listen_telegram_updates():
                         amt_str = parts[5]
 
                         answer_callback_query(cq_id, "Düşmedi bildirimi ilk gruba iletildi.")
-                        # Saha grubundaki mesajı güncelle
+                        # Saha grubundaki mesajı güncelle ama "Şimdi Düştü" butonunu açık tut!
+                        later_confirm_kb = {
+                            "inline_keyboard": [
+                                [
+                                    {"text": "✅ Para Şimdi Düştü (Onayla)", "callback_data": f"saha_onay:{sheet_id}:{row_num}:{origin_chat_id}:{origin_msg_id}:{amt_str}"}
+                                ]
+                            ]
+                        }
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + f"\n\n⏳ <b>Düşmedi Seçildi</b> ({html.escape(user_tag)})",
-                            reply_markup=None
+                            original_text + f"\n\n⏳ <b>Düşmedi Olarak İşaretlendi</b> ({html.escape(user_tag)})\n<i>(Hesaba düşerse aşağıdaki butonla onaylayabilirsiniz)</i>",
+                            reply_markup=later_confirm_kb
                         )
 
                         # İLK GRUBA BİLGİ VER
                         send_telegram_message(
-                            f"⏳ <b>Kayıt #{row_num}</b> için tutar ({amt_str}) henüz hesaba düşmedi, bekleniyor. Eğer düşerse bilgi verilecektir.",
+                            f"⏳ <b>Kayıt #{row_num}</b> için tutar ({amt_str}) henüz hesaba düşmedi, bekleniyor. Hesaba düştüğünde saha ekibi onaylayacaktır.",
                             chat_id=origin_chat_id,
                             reply_to_message_id=origin_msg_id
                         )
@@ -735,7 +742,7 @@ def listen_telegram_updates():
                                 f"👤 <b>İşlemi Tamamlayan:</b> {html.escape(user_tag)}\n"
                                 f"📌 <b>Son Durum:</b> {html.escape(status_text)}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"{html.escape(clean_base)}"
+                                f"{clean_base}"
                             )
                             send_telegram_message(analiz_raporu, chat_id=main_chat_id)
 
@@ -755,7 +762,7 @@ def listen_telegram_updates():
                         answer_callback_query(cq_id)
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + "\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>",
+                            original_text + "\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>",
                             reply_markup={"inline_keyboard": group_buttons}
                         )
 
@@ -782,7 +789,7 @@ def listen_telegram_updates():
                         answer_callback_query(cq_id)
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text).replace("\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>", "") +
+                            original_text.replace("\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>", "") +
                             f"\n\n❓ <b>Bu kayıt '{html.escape(target_name)}' grubuna aktarılsın mı?</b>",
                             reply_markup=confirm_keyboard
                         )
@@ -800,7 +807,7 @@ def listen_telegram_updates():
                         clean_lead_text = original_text.split("\n\n❓")[0].split("\n\n<i>↪️")[0]
 
                         success, target_msg_id = send_telegram_message(
-                            html.escape(clean_lead_text) + f"\n\n<i>(Aktaran: {html.escape(user_tag)})</i>",
+                            clean_lead_text + f"\n\n<i>(Aktaran: {html.escape(user_tag)})</i>",
                             chat_id=target_chat_id,
                             reply_markup=build_record_keyboard(sheet_id, row_num)
                         )
@@ -811,7 +818,7 @@ def listen_telegram_updates():
 
                         now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
                         updated_orig = (
-                            f"{html.escape(clean_lead_text)}\n"
+                            f"{clean_lead_text}\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
                             f"↪️ <b>{html.escape(target_name)}</b> grubuna aktarıldı ({html.escape(user_tag)} - {now_time})"
                         )
