@@ -80,11 +80,13 @@ def set_bot_commands():
             {"command": "help", "description": "Tum komutlari ve kilavuzu goster"},
             {"command": "panel", "description": "Web Admin panelini ac"},
             {"command": "durum", "description": "Sistem ve sheet durumunu goster"},
-            {"command": "sahaorani", "description": "Saha hakedis oranini ayarla"},
+            {"command": "data_grubu", "description": "Bu grubu ana data grubu yap"},
             {"command": "saha_grubu", "description": "Bu grubu saha grubu yap"},
+            {"command": "sahaorani", "description": "Saha hakedis oranini ayarla"},
             {"command": "sahaci", "description": "Sahaci kullanici ekle veya kaydol"},
             {"command": "sahaci_sil", "description": "Sahaci listesinden cikar"},
             {"command": "sahacilar", "description": "Kayitli sahacilari listele"},
+            {"command": "iptal", "description": "Bekleyen islemi iptal et"},
         ]
     }
     try:

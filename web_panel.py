@@ -43,6 +43,7 @@ from data_store import (
     format_duration,
     get_dashboard_metrics,
     get_record_global_id,
+    get_main_chat_id,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -1624,13 +1625,14 @@ def api_add_sheet():
     data = request.get_json() or {}
     name = data.get("name", "")
     url = data.get("url", "")
-    success, msg = add_sheet(name, url)
+    main_chat = get_main_chat_id()
+    success, msg = add_sheet(name, url, chat_id=main_chat)
     if success:
         # Yeni eklenen sheet'i hemen tara ve bekleyen satırları gruba at!
         try:
             from bot import check_and_send_sheet, extract_sheet_id
             sheet_id = extract_sheet_id(url)
-            threading.Thread(target=check_and_send_sheet, args=({"name": name or "Form", "url": url, "id": sheet_id},), daemon=True).start()
+            threading.Thread(target=check_and_send_sheet, args=({"name": name or "Form", "url": url, "id": sheet_id, "chat_id": main_chat},), daemon=True).start()
         except Exception as e:
             logger.error(f"Anlık sheet çekme hatası: {e}")
         return jsonify({"ok": True, "message": msg})

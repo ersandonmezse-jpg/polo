@@ -51,6 +51,8 @@ from data_store import (
     add_group,
     get_settings,
     set_saha_group,
+    get_main_chat_id,
+    set_main_chat_id,
     add_sahaci_user,
     remove_sahaci_user,
     set_record_status,
@@ -250,7 +252,7 @@ def send_telegram_message(text: str, chat_id: str = None, reply_markup: dict = N
     if not TELEGRAM_BOT_TOKEN:
         return False, None
 
-    target_chat = chat_id or TELEGRAM_CHAT_ID
+    target_chat = str(chat_id or get_main_chat_id() or TELEGRAM_CHAT_ID or "-5529859923")
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": target_chat,
@@ -270,6 +272,15 @@ def send_telegram_message(text: str, chat_id: str = None, reply_markup: dict = N
             if data.get("ok"):
                 msg_id = data.get("result", {}).get("message_id")
                 return True, msg_id
+            elif reply_markup and data.get("error_code") == 400:
+                # Eger buton/URL hatasi varsa butonsuz hemen tekrar dene
+                payload.pop("reply_markup", None)
+                res2 = requests.post(url, json=payload, timeout=15)
+                d2 = res2.json()
+                if d2.get("ok"):
+                    return True, d2.get("result", {}).get("message_id")
+                logger.error(f"Telegram API hatası (butonsuz deneme): {d2}")
+                return False, None
             elif data.get("error_code") == 429:
                 retry_after = data.get("parameters", {}).get("retry_after", 15)
                 time.sleep(retry_after + 1)
@@ -278,7 +289,7 @@ def send_telegram_message(text: str, chat_id: str = None, reply_markup: dict = N
                 return False, None
         except requests.RequestException as e:
             logger.error(f"Telegram gönderim hatası: {e}")
-            return False, None
+            time.sleep(2)
 
     return False, None
 
@@ -940,11 +951,15 @@ def listen_telegram_updates():
                         edit_telegram_message(chat_id, message_id, html.escape(clean_text), reply_markup=build_record_keyboard(sheet_id, row_num))
 
                 # ── 2. METİN MESAJLARI & KOMUTLAR ──────────────────────────
-                elif "message" in update:
-                    msg = update["message"]
+                elif any(k in update for k in ["message", "channel_post", "edited_message"]):
+                    msg = update.get("message") or update.get("channel_post") or update.get("edited_message")
+                    if not msg or not isinstance(msg, dict):
+                        continue
                     text = (msg.get("text") or "").strip()
-                    from_user = msg.get("from", {})
-                    user_id = from_user.get("id")
+                    if not text:
+                        continue
+                    from_user = msg.get("from") or {}
+                    user_id = from_user.get("id") or msg.get("chat", {}).get("id")
                     user_tag = f"@{from_user.get('username')}" if from_user.get("username") else (from_user.get("first_name") or "Temsilci")
                     from_chat_id = msg["chat"]["id"]
 
@@ -955,8 +970,15 @@ def listen_telegram_updates():
                             clean_cmd = first_word.split("@")[0]
                             text = clean_cmd + text[len(first_word):]
 
-                    # 2.A) BEKLEYEN YANITLAR (Not, Özel Tutar, Sahacı IBAN)
-                    pending = get_pending_action(user_id)
+                    is_command = text.startswith("/")
+
+                    if is_command and text.lower().strip() in ["/iptal", "/cancel"]:
+                        clear_pending_action(user_id)
+                        send_telegram_message("❌ Bekleyen işlem iptal edildi.", chat_id=from_chat_id)
+                        continue
+
+                    # 2.A) BEKLEYEN YANITLAR (Yalnızca komut DEĞİLSE çalışır!)
+                    pending = get_pending_action(user_id) if not is_command else None
 
                     # Eğer bu kişi bir not yazıyorsa
                     if pending and pending.get("action") == "note":
@@ -1199,6 +1221,18 @@ def listen_telegram_updates():
                             markup = {"inline_keyboard": [[{"text": "📊 Web Paneli Aç", "url": PUBLIC_URL}]]}
                         send_telegram_message(welcome_text, chat_id=from_chat_id, reply_markup=markup)
 
+                    # /data_grubu veya /ana_grup Komutu (Ana gelen kutusu grubunu ayarlar)
+                    elif base_cmd in ["/data_grubu", "/ana_grup", "/ana_grup_yap", "/datagrubu"]:
+                        g_title = msg["chat"].get("title") or "Ana Data Grubu"
+                        set_main_chat_id(str(from_chat_id), g_title)
+                        send_telegram_message(
+                            f"✅ <b>Bu grup 'Ana Data Grubu' olarak ayarlandı!</b>\n\n"
+                            f"Grup: <b>{html.escape(g_title)}</b>\n"
+                            f"ID: <code>{from_chat_id}</code>\n\n"
+                            f"Eklenen Google E-Tablo linklerindeki tüm kayıtlar artık bu gruba gönderilecektir.",
+                            chat_id=from_chat_id
+                        )
+
                     # /saha_grubu Komutu
                     elif base_cmd == "/saha_grubu" or cmd.startswith("/saha_grubu"):
                         g_title = msg["chat"].get("title") or "Saha Grubu"
@@ -1366,14 +1400,15 @@ def listen_telegram_updates():
                         send_telegram_message(reply, chat_id=from_chat_id)
 
                     # /link Komutu
-                    elif cmd.startswith("/link") or "docs.google.com/spreadsheets" in text:
+                    elif base_cmd == "/link" or cmd.startswith("/link") or "docs.google.com/spreadsheets" in text:
                         parts = text.split(maxsplit=1)
                         target_url = parts[1].strip() if len(parts) > 1 else text.strip()
 
                         match = re.search(r"https?://docs\.google\.com/spreadsheets/d/[a-zA-Z0-9-_]+[^\s]*", target_url)
                         if match:
                             clean_url = match.group(0)
-                            success, msg_resp = add_sheet("", clean_url)
+                            target_group = str(from_chat_id) if str(from_chat_id).startswith("-") else get_main_chat_id()
+                            success, msg_resp = add_sheet("", clean_url, chat_id=target_group)
 
                             if success:
                                 # Yeni eklenen sheet'in adını al
@@ -1383,15 +1418,16 @@ def listen_telegram_updates():
 
                                 # Hemen yeni eklenen sheet'i tara ve gönder!
                                 try:
-                                    threading.Thread(target=check_and_send_sheet, args=({"name": sheet_name, "url": clean_url, "id": s_id},), daemon=True).start()
+                                    threading.Thread(target=check_and_send_sheet, args=({"name": sheet_name, "url": clean_url, "id": s_id, "chat_id": target_group},), daemon=True).start()
                                 except Exception:
                                     pass
 
                                 reply_msg = (
                                     f"✅ <b>Google Sheets Başarıyla Eklendi!</b>\n\n"
                                     f"📝 <b>Tablo Adı:</b> <b>{html.escape(sheet_name)}</b>\n"
+                                    f"🎯 <b>Hedef Grup:</b> <code>{target_group}</code>\n"
                                     f"🔗 <b>Link:</b> {clean_url}\n\n"
-                                    f"Kayıtlar kontrol ediliyor ve etkileşim butonlarıyla gönderiliyor..."
+                                    f"Kayıtlar <code>{target_group}</code> grubuna etkileşim butonlarıyla aktarılıyor..."
                                 )
                             else:
                                 reply_msg = f"ℹ️ {msg_resp}"
@@ -1430,7 +1466,7 @@ def listen_telegram_updates():
                             send_telegram_message("Panel adresi henüz ayarlanmamış.", chat_id=from_chat_id)
 
         except Exception as e:
-            logger.debug(f"Update dinleme hatası: {e}")
+            logger.error(f"Update dinleme hatası: {e}", exc_info=True)
             time.sleep(3)
 
 
@@ -1481,7 +1517,8 @@ def check_and_send_sheet(sheet_config: dict):
         phone = row.get(col_mapping.get("phone_number", ""), "")
         tc_no = row.get(col_mapping.get("t.c_numaranız", ""), "")
 
-        success, msg_id = send_telegram_message(message, reply_markup=keyboard)
+        target_chat = str(sheet_config.get("chat_id") or get_main_chat_id() or TELEGRAM_CHAT_ID or "-5529859923")
+        success, msg_id = send_telegram_message(message, chat_id=target_chat, reply_markup=keyboard)
         if success:
             record_message_sent(sheet_id, entry_number, msg_id or 0, phone=phone, tc_no=tc_no, global_id=global_lead_id)
             time.sleep(2)

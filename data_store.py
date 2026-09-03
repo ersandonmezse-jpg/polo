@@ -47,14 +47,19 @@ STORE_LOCK = threading.Lock()
 
 
 def atomic_save_json(filepath: str, data: dict | list):
-    """Veriyi önce geçici bir dosyaya yazar, ardından atomik olarak asıl dosyayla değiştirir (Race condition ve bozulmaları önler)."""
+    """Veriyi önce geçici bir dosyaya yazar, ardından atomik olarak asıl dosyayla değiştirir."""
     tmp_path = f"{filepath}.tmp_{os.getpid()}_{time.time()}"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, filepath)
-    except Exception as e:
-        logger.error(f"Atomic JSON kaydetme hatası ({filepath}): {e}")
+    except Exception:
+        # Windows dosya kilidi durumunda doğrudan yazma fallback'i
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e2:
+            logger.error(f"JSON kaydetme hatası ({filepath}): {e2}")
         if os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
@@ -305,6 +310,22 @@ def set_saha_group(chat_id: str, name: str = "Saha Grubu"):
     save_settings(st)
 
 
+DEFAULT_MAIN_CHAT = "-5529859923"
+
+
+def get_main_chat_id() -> str:
+    st = get_settings()
+    return str(st.get("main_chat_id") or TELEGRAM_CHAT_ID or DEFAULT_MAIN_CHAT)
+
+
+def set_main_chat_id(chat_id: str, title: str = "Ana Data Grubu"):
+    st = get_settings()
+    st["main_chat_id"] = str(chat_id)
+    if title:
+        st["main_chat_title"] = title
+    save_settings(st)
+
+
 def clean_sahaci_username(username: str) -> str:
     if not username:
         return ""
@@ -382,13 +403,47 @@ def fetch_google_sheet_title(sheet_id: str) -> str:
 def get_sheets() -> list[dict]:
     with STORE_LOCK:
         if not os.path.exists(SHEETS_FILE):
-            save_sheets_unlocked([])
-            return []
+            default_list = []
+            if DEFAULT_SHEETS:
+                for ds in DEFAULT_SHEETS:
+                    try:
+                        sid = extract_sheet_id(ds["url"])
+                        default_list.append({
+                            "id": sid,
+                            "name": ds.get("name") or fetch_google_sheet_title(sid) or "zigiligo",
+                            "url": ds["url"],
+                            "chat_id": str(ds.get("chat_id") or get_main_chat_id()),
+                            "active": True,
+                            "status": "Aktif",
+                            "last_check": "—",
+                            "count": 0,
+                        })
+                    except Exception:
+                        pass
+            save_sheets_unlocked(default_list)
+            return default_list
 
         try:
             with open(SHEETS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list):
+                    if not data and DEFAULT_SHEETS:
+                        for ds in DEFAULT_SHEETS:
+                            try:
+                                sid = extract_sheet_id(ds["url"])
+                                data.append({
+                                    "id": sid,
+                                    "name": ds.get("name") or fetch_google_sheet_title(sid) or "zigiligo",
+                                    "url": ds["url"],
+                                    "chat_id": str(ds.get("chat_id") or get_main_chat_id()),
+                                    "active": True,
+                                    "status": "Aktif",
+                                    "last_check": "—",
+                                    "count": 0,
+                                })
+                            except Exception:
+                                pass
+                        save_sheets_unlocked(data)
                     return data
                 return []
         except Exception:
@@ -399,7 +454,7 @@ def save_sheets_unlocked(sheets: list[dict]):
     atomic_save_json(SHEETS_FILE, sheets)
 
 
-def add_sheet(name: str, url: str) -> tuple[bool, str]:
+def add_sheet(name: str, url: str, chat_id: str = "") -> tuple[bool, str]:
     try:
         sheet_id = extract_sheet_id(url)
     except ValueError as e:
@@ -409,6 +464,7 @@ def add_sheet(name: str, url: str) -> tuple[bool, str]:
 
     # Otomatik gerçek tablo adını çek (Eğer özel isim girilmediyse veya varsayılan 'Form' ise)
     auto_title = fetch_google_sheet_title(sheet_id)
+    target_group = str(chat_id or get_main_chat_id())
 
     with STORE_LOCK:
         sheets = []
@@ -423,11 +479,17 @@ def add_sheet(name: str, url: str) -> tuple[bool, str]:
 
         for s in sheets:
             if s.get("id") == sheet_id:
-                # İsim güncellenmek isteniyorsa güncelle
+                # İsim ve hedef grup güncellenmek isteniyorsa güncelle
+                updated = False
                 if auto_title and (s.get("name", "").startswith("Form ") or not s.get("name")):
                     s["name"] = auto_title
+                    updated = True
+                if chat_id and s.get("chat_id") != target_group:
+                    s["chat_id"] = target_group
+                    updated = True
+                if updated:
                     save_sheets_unlocked(sheets)
-                    return True, f"Tablo adı '{auto_title}' olarak güncellendi."
+                    return True, f"Tablo güncellendi: '{s.get('name')}' (Hedef Grup: {target_group})"
                 return False, f"Bu Google Sheets zaten ekli! ({s.get('name')})"
 
         # Kullanıcı özel isim girmediyse ya da 'Form' kaldıysa otomatik tablo başlığını kullan
@@ -441,6 +503,7 @@ def add_sheet(name: str, url: str) -> tuple[bool, str]:
             "id": sheet_id,
             "name": sheet_name,
             "url": clean_url,
+            "chat_id": target_group,
             "active": True,
             "status": "Aktif",
             "last_check": "—",
@@ -448,7 +511,7 @@ def add_sheet(name: str, url: str) -> tuple[bool, str]:
         }
         sheets.append(new_entry)
         save_sheets_unlocked(sheets)
-        return True, f"'{sheet_name}' başarıyla eklendi."
+        return True, f"'{sheet_name}' başarıyla eklendi. (Kayıtlar {target_group} grubuna iletilecek)"
 
 
 def delete_sheet(sheet_id: str) -> bool:
