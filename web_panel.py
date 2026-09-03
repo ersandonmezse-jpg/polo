@@ -79,18 +79,32 @@ def fetch_sheet_data(sheet_id: str) -> list[dict]:
     return list(csv.DictReader(io.StringIO(content)))
 
 
-def normalize_column_name(name: str) -> str:
-    return name.strip().lower().replace(" ", "_")
+def normalize_tr(text: str) -> str:
+    """Türkçe karakterleri ve özel işaretleri temizler."""
+    if not text:
+        return ""
+    tr_map = {'ı': 'i', 'İ': 'i', 'ş': 's', 'Ş': 's', 'ğ': 'g', 'Ğ': 'g', 'ü': 'u', 'Ü': 'u', 'ö': 'o', 'Ö': 'o', 'ç': 'c', 'Ç': 'c'}
+    clean = text.strip().lower()
+    for tr, en in tr_map.items():
+        clean = clean.replace(tr, en)
+    return clean.replace(" ", "_").replace(".", "").replace("?", "").replace("-", "_")
 
 
 def find_column_mapping(headers: list[str]) -> dict[str, str]:
     mapping = {}
     for header in headers:
-        normalized = normalize_column_name(header)
-        for target in TARGET_COLUMNS:
-            if normalized == target or normalized.replace(".", "").replace(" ", "_") == target.replace(".", ""):
-                mapping[target] = header
-                break
+        norm = normalize_tr(header)
+        if "created" in norm or "tarih" in norm or "zaman" in norm:
+            mapping.setdefault("created_time", header)
+        elif "calisma" in norm or "meslek" in norm or "durum" in norm:
+            mapping.setdefault("çalışma_durumu", header)
+        elif "tc" in norm or "kimlik" in norm:
+            mapping.setdefault("t.c_numaranız", header)
+        elif "limit" in norm or "kart" in norm:
+            mapping.setdefault("kullanılabilir_kart_limitiniz", header)
+        elif "telefon" in norm or "phone" in norm or "tel" in norm or "gsm" in norm or "mobile" in norm:
+            mapping.setdefault("phone_number", header)
+
     return mapping
 
 
@@ -1557,6 +1571,10 @@ def dashboard():
 
                     global_id = get_record_global_id(sheet_id, i)
 
+                    raw_phone = str(row.get(col_mapping.get("phone_number", ""), "") or "").strip()
+                    if raw_phone.startswith("p:"):
+                        raw_phone = raw_phone[2:]
+
                     sheet_info["rows"].append({
                         "num": global_id,
                         "raw_row_index": i,
@@ -1564,7 +1582,7 @@ def dashboard():
                         "calisma_durumu": row.get(col_mapping.get("çalışma_durumu", ""), "—"),
                         "tc_no": row.get(col_mapping.get("t.c_numaranız", ""), "—"),
                         "kart_limit": row.get(col_mapping.get("kullanılabilir_kart_limitiniz", ""), "—"),
-                        "phone": row.get(col_mapping.get("phone_number", ""), "—"),
+                        "phone": raw_phone or "—",
                         "lead_status": st_info.get("status", ""),
                         "lead_note": st_info.get("note", ""),
                         "lead_user": st_info.get("user", ""),
