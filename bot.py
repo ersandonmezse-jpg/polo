@@ -843,6 +843,13 @@ def listen_telegram_updates():
                     user_tag = f"@{from_user.get('username')}" if from_user.get("username") else (from_user.get("first_name") or "Temsilci")
                     from_chat_id = msg["chat"]["id"]
 
+                    # Komutlardaki bot username etiketini temizle (Örn: /help@palamutarmutbot -> /help)
+                    if text.startswith("/"):
+                        first_word = text.split()[0]
+                        if "@" in first_word:
+                            clean_cmd = first_word.split("@")[0]
+                            text = clean_cmd + text[len(first_word):]
+
                     # 2.A) BEKLEYEN YANITLAR (Not, Özel Tutar, Sahacı IBAN)
                     pending = get_pending_action(user_id)
 
