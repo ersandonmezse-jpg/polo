@@ -28,8 +28,62 @@ logger = logging.getLogger(__name__)
 # Dosya yolları
 SHEETS_FILE = "sheets_config.json"
 GROUPS_FILE = "groups_config.json"
+SETTINGS_FILE = "settings_config.json"
 STATE_FILE = "sheets_state.json"
 STORE_LOCK = threading.Lock()
+
+
+def get_settings() -> dict:
+    """Saha grubu ve sahacı listesini okur."""
+    with STORE_LOCK:
+        if not os.path.exists(SETTINGS_FILE):
+            default_settings = {
+                "saha_group_id": "",
+                "saha_group_name": "Saha Grubu",
+                "sahaci_users": [],  # ['@ahmet', '@mehmet']
+            }
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(default_settings, f, ensure_ascii=False, indent=2)
+            return default_settings
+
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {"saha_group_id": "", "saha_group_name": "Saha Grubu", "sahaci_users": []}
+
+
+def save_settings(settings: dict):
+    with STORE_LOCK:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+def set_saha_group(chat_id: str, name: str = "Saha Grubu"):
+    st = get_settings()
+    st["saha_group_id"] = str(chat_id)
+    st["saha_group_name"] = name
+    save_settings(st)
+
+
+def add_sahaci_user(username: str):
+    u = username.strip()
+    if not u.startswith("@"):
+        u = f"@{u}"
+    st = get_settings()
+    if u not in st["sahaci_users"]:
+        st["sahaci_users"].append(u)
+        save_settings(st)
+
+
+def remove_sahaci_user(username: str):
+    u = username.strip()
+    if not u.startswith("@"):
+        u = f"@{u}"
+    st = get_settings()
+    if u in st["sahaci_users"]:
+        st["sahaci_users"].remove(u)
+        save_settings(st)
 
 
 # ── URL ve Sheet ID Yardımcıları ──────────────────────────────────────────
@@ -284,7 +338,7 @@ def record_message_sent(sheet_id: str, row_num: int, message_id: int):
 
 
 def set_record_status(sheet_id: str, row_num: int, status: str, user_name: str = ""):
-    """Kaydın durumunu (Olumlu, Olumsuz, Kredi Düştü, vb.) günceller."""
+    """Kaydın durumunu (Not Eklendi, Olumsuz, Kredi Düştü, vb.) günceller."""
     state = load_state()
     sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []})
     statuses = sheet_st.setdefault("statuses", {})
@@ -299,6 +353,27 @@ def set_record_status(sheet_id: str, row_num: int, status: str, user_name: str =
 def get_record_status(sheet_id: str, row_num: int) -> dict:
     state = load_state()
     return state.get(sheet_id, {}).get("statuses", {}).get(str(row_num), {})
+
+
+# ── Bekleyen Kullanıcı Yanıtları (Not, Tutar, IBAN) ──────────────────────────
+# { user_id: {"action": "note|amount|iban", "sheet_id": ..., "row_num": ..., "origin_chat_id": ..., "origin_msg_id": ...} }
+PENDING_ACTIONS = {}
+PENDING_LOCK = threading.Lock()
+
+
+def set_pending_action(user_id: int, action_data: dict):
+    with PENDING_LOCK:
+        PENDING_ACTIONS[user_id] = action_data
+
+
+def get_pending_action(user_id: int) -> dict | None:
+    with PENDING_LOCK:
+        return PENDING_ACTIONS.get(user_id)
+
+
+def clear_pending_action(user_id: int):
+    with PENDING_LOCK:
+        PENDING_ACTIONS.pop(user_id, None)
 
 
 def is_record_deleted(sheet_id: str, row_num: int) -> bool:
