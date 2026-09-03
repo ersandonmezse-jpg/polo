@@ -49,6 +49,13 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
 
+@app.after_request
+def allow_telegram_iframe(response):
+    # Telegram Web App iframe'i için gerekli izin başlıkları
+    response.headers["X-Frame-Options"] = "ALLOWALL"
+    response.headers["Content-Security-Policy"] = "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org telegram:;"
+    return response
+
 TURKEY_TZ = pytz.timezone("Europe/Istanbul")
 
 TARGET_COLUMNS = [
