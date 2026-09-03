@@ -326,7 +326,7 @@ def listen_telegram_updates():
                             base_text = original_text.split("\n📌 Durum:")[0].split("\n📝 Not:")[0].split("\n↪️")[0]
                             now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
                             new_text = (
-                                f"{html.escape(base_text)}\n"
+                                f"{base_text}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                                 f"📌 <b>Durum:</b> {status_label} ({html.escape(user_tag)} - {now_time})"
                             )
@@ -569,7 +569,7 @@ def listen_telegram_updates():
                         answer_callback_query(cq_id, f"Atış tutarı ({amt_str}) saha grubuna iletildi.")
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(base_txt) + f"\n\n🎯 <b>Atış Atıldı:</b> {amt_str} ({html.escape(user_tag)} - {now_time})\n<i>⏳ Saha onay bekleniyor...</i>",
+                            base_txt + f"\n\n🎯 <b>Atış Atıldı:</b> {amt_str} ({html.escape(user_tag)} - {now_time})\n<i>⏳ Saha onay bekleniyor...</i>",
                             reply_markup=None
                         )
 
