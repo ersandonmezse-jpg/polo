@@ -1022,6 +1022,44 @@ def listen_telegram_updates():
                             )
                         continue
 
+                    # /help veya /yardim Komutu
+                    if text.startswith("/help") or text.startswith("/yardim"):
+                        help_text = (
+                            "📖 <b>BOT KULLANIM KILAVUZU & TÜM KOMUTLAR</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            "🏢 <b>Saha & Finans Operasyon Komutları:</b>\n"
+                            "• <code>/saha_grubu</code>\n"
+                            "  ↳ <i>Bulunduğunuz grubu 'Saha Grubu' olarak tanımlar. Kredi düşen datalar otomatik buraya yönlendirilir.</i>\n\n"
+                            "• <code>/sahaci</code> veya <code>/sahaciyim</code>\n"
+                            "  ↳ <i>Sizi sahacı rolüne kaydeder. Yeni kredi düştüğünde sizi otomatik etiketler.</i>\n\n"
+                            "• <code>/sahaorani [oran]</code>\n"
+                            "  ↳ <i>Saha hakediş yüzdesini günceller. Örn: <code>/sahaorani 15</code> veya <code>/sahaorani 20</code>.</i>\n\n"
+                            "👥 <b>Grup & Data Yönetim Komutları:</b>\n"
+                            "• <code>/grup_ekle [Grup Adı]</code>\n"
+                            "  ↳ <i>Bulunulan grubu 'Aktarılacak Hedef Gruplar' listesine ekler. Örn: <code>/grup_ekle Satış Ekibi 1</code>.</i>\n\n"
+                            "• <code>/link [Google Sheets Linki]</code>\n"
+                            "  ↳ <i>Yeni bir Google E-Tablo linkini bota ekler. Bot yeni satırları otomatik çeker.</i>\n\n"
+                            "📊 <b>Genel & Durum Komutları:</b>\n"
+                            "• <code>/durum</code>\n"
+                            "  ↳ <i>Aktif sheetleri, saha grubunu, kayıtlı sahacıları ve hedef grupları listeler.</i>\n\n"
+                            "• <code>/panel</code>\n"
+                            "  ↳ <i>Web Admin panelinin giriş linkini açar.</i>\n\n"
+                            "• <code>/start</code>\n"
+                            "  ↳ <i>Botu başlatır ve temel menüyü gösterir.</i>\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            "💡 <b>İşlem Butonları Akışı:</b>\n"
+                            "1. <b>Not Ekle:</b> Kayda müşteriyle ilgili not ekler.\n"
+                            "2. <b>Kredi Düştü:</b> Tutar seçilir → Saha grubuna bildirim gider.\n"
+                            "3. <b>IBAN Paylaş:</b> Sahacı IBAN yollar → Temsilci grubuna düşer.\n"
+                            "4. <b>Atış Atıldı / İşlem Kaçtı:</b> Tutar onaylanır veya kapatılır.\n"
+                            "5. <b>İşlem Bitti:</b> Data aktarılan gruptan silinir, ana gruba <b>Süre Analizi</b> ile geri çekilir!"
+                        )
+                        markup = None
+                        if PUBLIC_URL:
+                            markup = {"inline_keyboard": [[{"text": "📊 Web Paneli Aç", "url": PUBLIC_URL}]]}
+                        send_telegram_message(help_text, chat_id=from_chat_id, reply_markup=markup)
+                        continue
+
                     # /start Komutu
                     if text.startswith("/start"):
                         welcome_text = (

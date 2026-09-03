@@ -77,8 +77,12 @@ def set_bot_commands():
     api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyCommands"
     payload = {
         "commands": [
-            {"command": "panel", "description": "Admin paneli ac"},
-            {"command": "durum", "description": "Bot durumunu goster"},
+            {"command": "help", "description": "Tum komutlari ve kilavuzu goster"},
+            {"command": "panel", "description": "Web Admin panelini ac"},
+            {"command": "durum", "description": "Sistem ve sheet durumunu goster"},
+            {"command": "sahaorani", "description": "Saha hakedis oranini ayarla"},
+            {"command": "saha_grubu", "description": "Bu grubu saha grubu yap"},
+            {"command": "sahaci", "description": "Sahaci rolune kaydol"},
         ]
     }
     try:
