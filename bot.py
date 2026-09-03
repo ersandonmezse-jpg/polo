@@ -1112,13 +1112,14 @@ def listen_telegram_updates():
                             )
                         continue
 
+                    parts = text.split()
                     cmd = text.lower()
+                    base_cmd = parts[0].split("@")[0].lower() if parts else ""
 
                     # 2.B) STANDART KOMUTLAR
 
                     # /sahaorani Komutu (Örn: /sahaorani 15 veya /sahaorani 20)
-                    if cmd.startswith("/sahaorani"):
-                        parts = text.split()
+                    if base_cmd == "/sahaorani" or cmd.startswith("/sahaorani"):
                         if len(parts) > 1:
                             try:
                                 clean_rate = float(parts[1].replace("%", "").replace(",", "."))
@@ -1138,15 +1139,19 @@ def listen_telegram_updates():
                         continue
 
                     # /help veya /yardim Komutu
-                    elif cmd.startswith("/help") or cmd.startswith("/yardim"):
+                    elif base_cmd in ["/help", "/yardim", "/komutlar"] or cmd.startswith(("/help", "/yardim")):
                         help_text = (
                             "📖 <b>BOT KULLANIM KILAVUZU & TÜM KOMUTLAR</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                             "🏢 <b>Saha & Finans Operasyon Komutları:</b>\n"
                             "• <code>/saha_grubu</code>\n"
                             "  ↳ <i>Bulunduğunuz grubu 'Saha Grubu' olarak tanımlar. Kredi düşen datalar otomatik buraya yönlendirilir.</i>\n\n"
-                            "• <code>/sahaci</code> veya <code>/sahaciyim</code>\n"
-                            "  ↳ <i>Sizi sahacı rolüne kaydeder. Yeni kredi düştüğünde sizi otomatik etiketler.</i>\n\n"
+                            "• <code>/sahaci @kullaniciadi</code> veya <code>/sahaci</code>\n"
+                            "  ↳ <i>Belirtilen kullanıcıyı (veya kendinizi) sahacı rolüne ekler. Kredi düşüşlerinde otomatik etiketlenirler.</i>\n\n"
+                            "• <code>/sahaci_sil @kullaniciadi</code> veya <code>/sahaci sil @kullaniciadi</code>\n"
+                            "  ↳ <i>Belirtilen kullanıcıyı sahacı listesinden çıkarır.</i>\n\n"
+                            "• <code>/sahacilar</code>\n"
+                            "  ↳ <i>Mevcut kayıtlı sahacıların listesini gösterir.</i>\n\n"
                             "• <code>/sahaorani [oran]</code>\n"
                             "  ↳ <i>Saha hakediş yüzdesini günceller. Örn: <code>/sahaorani 15</code> veya <code>/sahaorani 20</code>.</i>\n\n"
                             "👥 <b>Grup & Data Yönetim Komutları:</b>\n"
@@ -1176,12 +1181,14 @@ def listen_telegram_updates():
                         continue
 
                     # /start Komutu
-                    elif cmd.startswith("/start"):
+                    elif base_cmd == "/start" or cmd.startswith("/start"):
                         welcome_text = (
                             "👋 <b>Google Sheets Saha & Finans Botu Aktif!</b>\n\n"
                             "Komutlar:\n"
                             "• <code>/saha_grubu</code> - Bulunulan grubu Saha Grubu yapar\n"
-                            "• <code>/sahaci</code> veya <code>/sahaciyim</code> - Sizi sahacı listesine ekler\n"
+                            "• <code>/sahaci @kullaniciadi</code> - Sahacı listesine kullanıcı ekler\n"
+                            "• <code>/sahaci_sil @kullaniciadi</code> - Sahacı listesinden çıkarır\n"
+                            "• <code>/sahacilar</code> - Kayıtlı sahacıları listeler\n"
                             "• <code>/grup_ekle &lt;Grup Adı&gt;</code> - Grubu aktarım listesine ekler\n"
                             "• <code>/link &lt;Link&gt;</code> - Yeni Google Sheets ekler\n"
                             "• <code>/durum</code> - Tüm grupları ve ayarları gösterir\n"
@@ -1193,7 +1200,7 @@ def listen_telegram_updates():
                         send_telegram_message(welcome_text, chat_id=from_chat_id, reply_markup=markup)
 
                     # /saha_grubu Komutu
-                    elif cmd.startswith("/saha_grubu"):
+                    elif base_cmd == "/saha_grubu" or cmd.startswith("/saha_grubu"):
                         g_title = msg["chat"].get("title") or "Saha Grubu"
                         set_saha_group(str(from_chat_id), g_title)
                         send_telegram_message(
@@ -1204,21 +1211,148 @@ def listen_telegram_updates():
                             chat_id=from_chat_id
                         )
 
-                    # /sahaci veya /sahaciyim Komutu
-                    elif cmd.startswith("/sahaci") or cmd.startswith("/sahaciyim"):
-                        if from_user.get("username"):
-                            u_tag = f"@{from_user.get('username')}"
-                            add_sahaci_user(u_tag)
-                            send_telegram_message(
-                                f"✅ {u_tag}, başarıyla <b>Sahacı Rolü</b>ne eklendiniz!\n\n"
-                                f"Kredi düştüğünde bildirimlerde otomatik etiketleneceksiniz.",
-                                chat_id=from_chat_id
-                            )
+                    # /sahaci veya /sahaciyim veya /sahaci_ekle Komutu
+                    elif base_cmd in ["/sahaci", "/sahaciyim", "/sahaci_ekle"]:
+                        # 1. /sahaci sil @user kontrolü
+                        if len(parts) > 1 and parts[1].lower() in ["sil", "çıkar", "cikar", "delete", "remove", "del"]:
+                            del_targets = parts[2:]
+                            if not del_targets and msg.get("reply_to_message"):
+                                rep_uname = msg.get("reply_to_message", {}).get("from", {}).get("username")
+                                if rep_uname:
+                                    del_targets = [f"@{rep_uname}"]
+
+                            if del_targets:
+                                removed = []
+                                for t in del_targets:
+                                    if remove_sahaci_user(t):
+                                        t_tag = t if t.startswith("@") else f"@{t}"
+                                        removed.append(t_tag)
+                                all_s = get_settings().get("sahaci_users", [])
+                                all_s_str = ", ".join(all_s) if all_s else "Yok"
+                                if removed:
+                                    send_telegram_message(
+                                        f"🗑️ <b>Sahacı Rolü Kaldırıldı!</b>\n\n"
+                                        f"Çıkarılan: <b>{', '.join(removed)}</b>\n"
+                                        f"📋 <b>Kalan Sahacılar:</b> {all_s_str}",
+                                        chat_id=from_chat_id
+                                    )
+                                else:
+                                    send_telegram_message(
+                                        f"ℹ️ Belirtilen kullanıcı(lar) zaten sahacı listesinde yok.\n📋 <b>Mevcut Sahacılar:</b> {all_s_str}",
+                                        chat_id=from_chat_id
+                                    )
+                            else:
+                                send_telegram_message(
+                                    "⚠️ Kimi çıkarmak istiyorsunuz? Örn: <code>/sahaci sil @kullaniciadi</code>",
+                                    chat_id=from_chat_id
+                                )
+                            continue
+
+                        # 2. Parametre olarak username(ler) verilmiş mi? (Örn: /sahaci @ahmet veya /sahaci ahmet)
+                        targets_to_add = parts[1:]
+                        if not targets_to_add and msg.get("reply_to_message"):
+                            # Mesaj yanıtlanarak /sahaci yazılmış
+                            rep_uname = msg.get("reply_to_message", {}).get("from", {}).get("username")
+                            if rep_uname:
+                                targets_to_add = [f"@{rep_uname}"]
+                            else:
+                                send_telegram_message(
+                                    "⚠️ Yanıtladığınız kullanıcının Telegram Kullanıcı Adı (Username) bulunamadı. Lütfen kullanıcı adını yazarak ekleyin:\n👉 <code>/sahaci @kullaniciadi</code>",
+                                    chat_id=from_chat_id
+                                )
+                                continue
+
+                        if targets_to_add:
+                            added_users = []
+                            for target in targets_to_add:
+                                added_tag = add_sahaci_user(target)
+                                if added_tag:
+                                    added_users.append(added_tag)
+
+                            all_s = get_settings().get("sahaci_users", [])
+                            all_s_str = ", ".join(all_s) if all_s else "Yok"
+
+                            if added_users:
+                                send_telegram_message(
+                                    f"✅ <b>Sahacı Rolü Tanımlandı!</b>\n\n"
+                                    f"👷 <b>Eklenen:</b> {', '.join(added_users)}\n"
+                                    f"📋 <b>Tüm Sahacılar:</b> {all_s_str}\n\n"
+                                    f"Kredi düştüğünde bildirimlerde otomatik etiketlenecekler.",
+                                    chat_id=from_chat_id
+                                )
+                            else:
+                                send_telegram_message(
+                                    "⚠️ Geçerli bir kullanıcı adı tespit edilemedi. Örn: <code>/sahaci @kullaniciadi</code>",
+                                    chat_id=from_chat_id
+                                )
+                        else:
+                            # Parametre verilmemiş ve yanıt değil -> Komutu yazan kişi kendini ekliyor
+                            if from_user.get("username"):
+                                u_tag = f"@{from_user.get('username')}"
+                                add_sahaci_user(u_tag)
+                                all_s = get_settings().get("sahaci_users", [])
+                                all_s_str = ", ".join(all_s) if all_s else "Yok"
+                                send_telegram_message(
+                                    f"✅ <b>{u_tag}</b>, başarıyla <b>Sahacı Rolü</b>ne eklendiniz!\n\n"
+                                    f"📋 <b>Tüm Sahacılar:</b> {all_s_str}\n\n"
+                                    f"Kredi düştüğünde bildirimlerde otomatik etiketleneceksiniz.",
+                                    chat_id=from_chat_id
+                                )
+                            else:
+                                all_s = get_settings().get("sahaci_users", [])
+                                all_s_str = ", ".join(all_s) if all_s else "Yok"
+                                send_telegram_message(
+                                    "⚠️ <b>Sahacı Ekleme Formatı:</b>\n\n"
+                                    "• Başka birini eklemek için: <code>/sahaci @kullaniciadi</code>\n"
+                                    "• Mesajını yanıtlayıp: <code>/sahaci</code>\n"
+                                    "• Kendinizi eklemek için: Telegram profilinizden bir Kullanıcı Adı (Username) belirleyin.\n\n"
+                                    f"📋 <b>Mevcut Sahacılar:</b> {all_s_str}",
+                                    chat_id=from_chat_id
+                                )
+
+                    # /sahaci_sil veya /sahacisil Komutu
+                    elif base_cmd in ["/sahaci_sil", "/sahacisil", "/sahaci_cikar", "/sahacicikar"]:
+                        targets = parts[1:]
+                        if not targets and msg.get("reply_to_message"):
+                            rep_uname = msg.get("reply_to_message", {}).get("from", {}).get("username")
+                            if rep_uname:
+                                targets = [f"@{rep_uname}"]
+
+                        if targets:
+                            removed = []
+                            for t in targets:
+                                if remove_sahaci_user(t):
+                                    removed.append(t if t.startswith("@") else f"@{t}")
+                            all_s = get_settings().get("sahaci_users", [])
+                            all_s_str = ", ".join(all_s) if all_s else "Yok"
+                            if removed:
+                                send_telegram_message(
+                                    f"🗑️ <b>Sahacı Rolü Kaldırıldı!</b>\n\n"
+                                    f"Çıkarılan: <b>{', '.join(removed)}</b>\n"
+                                    f"📋 <b>Kalan Sahacılar:</b> {all_s_str}",
+                                    chat_id=from_chat_id
+                                )
+                            else:
+                                send_telegram_message(
+                                    f"ℹ️ Belirtilen kullanıcı(lar) zaten sahacı listesinde bulunamadı.\n📋 <b>Mevcut Sahacılar:</b> {all_s_str}",
+                                    chat_id=from_chat_id
+                                )
                         else:
                             send_telegram_message(
-                                "⚠️ Sahacı rolü alabilmek için lütfen bir Telegram Kullanıcı Adı (Username) belirleyin!",
+                                "⚠️ Çıkarmak istediğiniz kişiyi belirtin:\nÖrn: <code>/sahaci_sil @kullaniciadi</code>",
                                 chat_id=from_chat_id
                             )
+
+                    # /sahacilar veya /sahaci_liste Komutu
+                    elif base_cmd in ["/sahacilar", "/sahaci_liste", "/sahaciler"]:
+                        all_s = get_settings().get("sahaci_users", [])
+                        all_s_str = "\n".join([f"• <b>{u}</b>" for u in all_s]) if all_s else "<i>Henüz kayıtlı sahacı yok.</i>"
+                        send_telegram_message(
+                            f"👷 <b>Kayıtlı Sahacılar Listesi:</b>\n\n{all_s_str}\n\n"
+                            f"➕ <b>Ekle:</b> <code>/sahaci @kullaniciadi</code>\n"
+                            f"➖ <b>Çıkar:</b> <code>/sahaci_sil @kullaniciadi</code>",
+                            chat_id=from_chat_id
+                        )
 
                     # /grup_ekle Komutu
                     elif cmd.startswith("/grup_ekle"):

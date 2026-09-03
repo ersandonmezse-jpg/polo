@@ -82,7 +82,9 @@ def set_bot_commands():
             {"command": "durum", "description": "Sistem ve sheet durumunu goster"},
             {"command": "sahaorani", "description": "Saha hakedis oranini ayarla"},
             {"command": "saha_grubu", "description": "Bu grubu saha grubu yap"},
-            {"command": "sahaci", "description": "Sahaci rolune kaydol"},
+            {"command": "sahaci", "description": "Sahaci kullanici ekle veya kaydol"},
+            {"command": "sahaci_sil", "description": "Sahaci listesinden cikar"},
+            {"command": "sahacilar", "description": "Kayitli sahacilari listele"},
         ]
     }
     try:

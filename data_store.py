@@ -305,24 +305,43 @@ def set_saha_group(chat_id: str, name: str = "Saha Grubu"):
     save_settings(st)
 
 
-def add_sahaci_user(username: str):
-    u = username.strip()
-    if not u.startswith("@"):
-        u = f"@{u}"
-    st = get_settings()
-    if u not in st["sahaci_users"]:
-        st["sahaci_users"].append(u)
-        save_settings(st)
+def clean_sahaci_username(username: str) -> str:
+    if not username:
+        return ""
+    u = str(username).strip()
+    u = re.sub(r"^https?://t\.me/", "", u)
+    u = re.sub(r"^t\.me/", "", u)
+    u = u.lstrip("@").rstrip("/.,;: \t\n\r")
+    u = re.sub(r"[^a-zA-Z0-9_]", "", u)
+    if u:
+        return f"@{u}"
+    return ""
 
 
-def remove_sahaci_user(username: str):
-    u = username.strip()
-    if not u.startswith("@"):
-        u = f"@{u}"
+def add_sahaci_user(username: str) -> str:
+    u = clean_sahaci_username(username)
+    if not u:
+        return ""
     st = get_settings()
-    if u in st["sahaci_users"]:
-        st["sahaci_users"].remove(u)
+    curr_list = st.setdefault("sahaci_users", [])
+    if u.lower() not in [x.lower() for x in curr_list]:
+        curr_list.append(u)
         save_settings(st)
+    return u
+
+
+def remove_sahaci_user(username: str) -> bool:
+    u = clean_sahaci_username(username)
+    if not u:
+        return False
+    st = get_settings()
+    curr_list = st.get("sahaci_users", [])
+    new_list = [x for x in curr_list if x.lower() != u.lower()]
+    if len(new_list) != len(curr_list):
+        st["sahaci_users"] = new_list
+        save_settings(st)
+        return True
+    return False
 
 
 # ── URL ve Sheet ID Yardımcıları ──────────────────────────────────────────
