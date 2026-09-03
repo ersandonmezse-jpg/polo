@@ -116,23 +116,8 @@ def extract_sheet_id(url_or_id: str) -> str:
 def get_sheets() -> list[dict]:
     with STORE_LOCK:
         if not os.path.exists(SHEETS_FILE):
-            initial = []
-            for s in DEFAULT_SHEETS:
-                try:
-                    s_id = extract_sheet_id(s["url"])
-                    initial.append({
-                        "id": s_id,
-                        "name": s["name"],
-                        "url": s["url"],
-                        "active": True,
-                        "status": "Bekliyor",
-                        "last_check": "—",
-                        "count": 0
-                    })
-                except Exception:
-                    pass
-            save_sheets_unlocked(initial)
-            return initial
+            save_sheets_unlocked([])
+            return []
 
         try:
             with open(SHEETS_FILE, "r", encoding="utf-8") as f:
@@ -196,6 +181,18 @@ def delete_sheet(sheet_id: str) -> bool:
                 sheets = json.load(f)
             sheets = [s for s in sheets if s.get("id") != sheet_id]
             save_sheets_unlocked(sheets)
+
+            # State dosyasından da bu sheet'i tamamen temizle
+            try:
+                if os.path.exists(STATE_FILE):
+                    with open(STATE_FILE, "r", encoding="utf-8") as f:
+                        st = json.load(f)
+                    st.pop(sheet_id, None)
+                    with open(STATE_FILE, "w", encoding="utf-8") as f:
+                        json.dump(st, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+
             return True
         except Exception as e:
             logger.error(f"Sheet silme hatası: {e}")
