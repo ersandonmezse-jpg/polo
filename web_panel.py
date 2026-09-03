@@ -1,0 +1,1381 @@
+"""
+Telegram Mini App — Web Panel
+==============================
+- PIN korumalı (Brute-force koruması ve Ekran Numpad'i)
+- Google Sheets link ekleme / çıkarma / aktiflik yönetimi
+- Kayıtları tek tuşla tümüyle kopyalama
+- Kayıt silme ve Telegram grubundan da silme (deleteMessage)
+"""
+
+import csv
+import io
+import json
+import os
+import re
+import logging
+from datetime import datetime
+from functools import wraps
+
+import pytz
+import requests
+from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
+
+from config import (
+    ADMIN_PIN,
+    WEB_PORT,
+)
+from data_store import (
+    get_sheets,
+    add_sheet,
+    delete_sheet,
+    toggle_sheet_active,
+    extract_sheet_id,
+    delete_record,
+    is_record_deleted,
+    check_rate_limit,
+    record_failed_attempt,
+    record_successful_login,
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+app.secret_key = os.urandom(32)
+
+TURKEY_TZ = pytz.timezone("Europe/Istanbul")
+
+TARGET_COLUMNS = [
+    "created_time",
+    "çalışma_durumu",
+    "t.c_numaranız",
+    "kullanılabilir_kart_limitiniz",
+    "phone_number",
+]
+
+
+# ── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
+
+def fetch_sheet_data(sheet_id: str) -> list[dict]:
+    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    response = requests.get(csv_url, timeout=30)
+    response.raise_for_status()
+    content = response.content.decode("utf-8-sig")
+    return list(csv.DictReader(io.StringIO(content)))
+
+
+def normalize_column_name(name: str) -> str:
+    return name.strip().lower().replace(" ", "_")
+
+
+def find_column_mapping(headers: list[str]) -> dict[str, str]:
+    mapping = {}
+    for header in headers:
+        normalized = normalize_column_name(header)
+        for target in TARGET_COLUMNS:
+            if normalized == target or normalized.replace(".", "").replace(" ", "_") == target.replace(".", ""):
+                mapping[target] = header
+                break
+    return mapping
+
+
+def convert_to_turkey_time(time_str: str) -> str:
+    if not time_str or not time_str.strip():
+        return "—"
+    time_str = time_str.strip()
+    formats = [
+        "%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S",
+        "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y",
+    ]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(time_str, fmt)
+            if dt.tzinfo is None:
+                dt = pytz.utc.localize(dt)
+            return dt.astimezone(TURKEY_TZ).strftime("%d/%m/%Y %H:%M:%S")
+        except ValueError:
+            continue
+    return time_str
+
+
+def get_client_ip():
+    return request.headers.get("X-Forwarded-For", request.remote_addr or "127.0.0.1").split(",")[0].strip()
+
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("logged_in"):
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+# ── HTML ŞABLONLARI ─────────────────────────────────────────────────────────
+
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Admin Giriş</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg-color: var(--tg-theme-bg-color, #0c0e14);
+            --card-bg: var(--tg-theme-secondary-bg-color, rgba(255,255,255,0.04));
+            --text-color: var(--tg-theme-text-color, #f4f4f5);
+            --hint-color: var(--tg-theme-hint-color, #71717a);
+            --btn-color: var(--tg-theme-button-color, #6366f1);
+            --btn-text: var(--tg-theme-button-text-color, #ffffff);
+            --border-color: rgba(255,255,255,0.08);
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-color);
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+        .login-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 24px 20px;
+            width: 100%;
+            max-width: 320px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .lock-icon { font-size: 38px; margin-bottom: 8px; }
+        h1 { font-size: 19px; font-weight: 700; margin-bottom: 4px; }
+        .subtitle {
+            font-size: 12px;
+            color: var(--hint-color);
+            margin-bottom: 18px;
+        }
+        .pin-dots {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+        .pin-dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.25);
+            background: transparent;
+            transition: all 0.15s ease;
+        }
+        .pin-dot.filled {
+            background: var(--btn-color);
+            border-color: var(--btn-color);
+            box-shadow: 0 0 10px rgba(99,102,241,0.5);
+            transform: scale(1.15);
+        }
+        .error-msg {
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 10px;
+            padding: 8px 12px;
+            font-size: 12px;
+            margin-bottom: 14px;
+            width: 100%;
+        }
+        .lockout-msg {
+            background: rgba(245, 158, 11, 0.15);
+            color: #fbbf24;
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-size: 12px;
+            margin-bottom: 14px;
+            width: 100%;
+            font-weight: 600;
+        }
+
+        /* ── On-Screen Numpad ── */
+        .numpad {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            width: 100%;
+            max-width: 260px;
+        }
+        .num-btn {
+            aspect-ratio: 1;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            color: var(--text-color);
+            font-size: 20px;
+            font-weight: 700;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.1s;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .num-btn:active {
+            transform: scale(0.92);
+            background: rgba(99,102,241,0.25);
+            border-color: var(--btn-color);
+        }
+        .num-btn.fn-btn {
+            font-size: 15px;
+            background: rgba(255,255,255,0.03);
+            color: var(--hint-color);
+        }
+        .num-btn:disabled {
+            opacity: 0.3;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="lock-icon">🔐</div>
+        <h1>Admin Giriş</h1>
+        <p class="subtitle">PIN kodunu tuşlayın</p>
+
+        {% if locked %}
+        <div class="lockout-msg">
+            ⛔ Çok fazla hatalı deneme!<br>
+            Lütfen <b>{{ wait_sec }} saniye</b> sonra tekrar deneyin.
+        </div>
+        {% elif error %}
+        <div class="error-msg">
+            {{ error }}
+            {% if remaining < 5 %}
+            <div style="font-size:11px; margin-top:3px; opacity:0.85;">Kalan deneme hakkı: {{ remaining }}</div>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="pin-dots">
+            <div class="pin-dot" id="dot-0"></div>
+            <div class="pin-dot" id="dot-1"></div>
+            <div class="pin-dot" id="dot-2"></div>
+            <div class="pin-dot" id="dot-3"></div>
+        </div>
+
+        <form method="POST" id="pinForm">
+            <input type="hidden" name="pin" id="pinInput">
+        </form>
+
+        <div class="numpad">
+            <button type="button" class="num-btn" onclick="pressKey('1')" {% if locked %}disabled{% endif %}>1</button>
+            <button type="button" class="num-btn" onclick="pressKey('2')" {% if locked %}disabled{% endif %}>2</button>
+            <button type="button" class="num-btn" onclick="pressKey('3')" {% if locked %}disabled{% endif %}>3</button>
+            <button type="button" class="num-btn" onclick="pressKey('4')" {% if locked %}disabled{% endif %}>4</button>
+            <button type="button" class="num-btn" onclick="pressKey('5')" {% if locked %}disabled{% endif %}>5</button>
+            <button type="button" class="num-btn" onclick="pressKey('6')" {% if locked %}disabled{% endif %}>6</button>
+            <button type="button" class="num-btn" onclick="pressKey('7')" {% if locked %}disabled{% endif %}>7</button>
+            <button type="button" class="num-btn" onclick="pressKey('8')" {% if locked %}disabled{% endif %}>8</button>
+            <button type="button" class="num-btn" onclick="pressKey('9')" {% if locked %}disabled{% endif %}>9</button>
+            <button type="button" class="num-btn fn-btn" onclick="clearPin()" {% if locked %}disabled{% endif %}>C</button>
+            <button type="button" class="num-btn" onclick="pressKey('0')" {% if locked %}disabled{% endif %}>0</button>
+            <button type="button" class="num-btn fn-btn" onclick="backspace()" {% if locked %}disabled{% endif %}>⌫</button>
+        </div>
+    </div>
+
+    <script>
+        if (window.Telegram && Telegram.WebApp) {
+            Telegram.WebApp.ready();
+            Telegram.WebApp.expand();
+        }
+
+        let enteredPin = "";
+        const pinInput = document.getElementById("pinInput");
+        const form = document.getElementById("pinForm");
+
+        function updateDots() {
+            for (let i = 0; i < 4; i++) {
+                const dot = document.getElementById("dot-" + i);
+                if (i < enteredPin.length) {
+                    dot.classList.add("filled");
+                } else {
+                    dot.classList.remove("filled");
+                }
+            }
+        }
+
+        function triggerHaptic(type = "light") {
+            if (window.Telegram && Telegram.WebApp && Telegram.WebApp.HapticFeedback) {
+                Telegram.WebApp.HapticFeedback.impactOccurred(type);
+            }
+        }
+
+        function pressKey(num) {
+            if (enteredPin.length < 4) {
+                enteredPin += num;
+                triggerHaptic("light");
+                updateDots();
+
+                if (enteredPin.length === 4) {
+                    pinInput.value = enteredPin;
+                    setTimeout(() => form.submit(), 150);
+                }
+            }
+        }
+
+        function backspace() {
+            if (enteredPin.length > 0) {
+                enteredPin = enteredPin.slice(0, -1);
+                triggerHaptic("medium");
+                updateDots();
+            }
+        }
+
+        function clearPin() {
+            enteredPin = "";
+            triggerHaptic("heavy");
+            updateDots();
+        }
+
+        // Klavye desteği
+        document.addEventListener("keydown", (e) => {
+            if (e.key >= "0" && e.key <= "9") {
+                pressKey(e.key);
+            } else if (e.key === "Backspace") {
+                backspace();
+            } else if (e.key === "Escape") {
+                clearPin();
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+
+DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Admin Panel</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg-color: var(--tg-theme-bg-color, #0c0e14);
+            --card-bg: var(--tg-theme-secondary-bg-color, rgba(255,255,255,0.04));
+            --text-color: var(--tg-theme-text-color, #f4f4f5);
+            --hint-color: var(--tg-theme-hint-color, #71717a);
+            --btn-color: var(--tg-theme-button-color, #6366f1);
+            --btn-text: var(--tg-theme-button-text-color, #ffffff);
+            --border-color: rgba(255,255,255,0.08);
+            --accent-glow: rgba(99,102,241,0.15);
+            --danger-color: #ef4444;
+            --success-color: #22c55e;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg-color);
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+        }
+
+        .app-shell {
+            width: 100%;
+            max-width: 540px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding-bottom: 24px;
+        }
+
+        @media (min-width: 768px) {
+            .app-shell { max-width: 820px; }
+        }
+
+        /* ── Top Navigation Bar ── */
+        .top-bar {
+            background: rgba(18, 20, 29, 0.9);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border-color);
+            padding: 12px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .top-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 16px;
+            font-weight: 700;
+        }
+        .top-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .icon-btn {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            padding: 6px 10px;
+            border-radius: 9px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.15s;
+        }
+        .icon-btn:active {
+            transform: scale(0.94);
+            background: rgba(255,255,255,0.1);
+        }
+        .icon-btn.primary {
+            background: var(--btn-color);
+            color: var(--btn-text);
+            border-color: var(--btn-color);
+        }
+
+        /* ── Stats Bar ── */
+        .stats-bar {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            padding: 12px 14px 4px;
+        }
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 10px 14px;
+        }
+        .stat-card .s-label {
+            font-size: 11px;
+            color: var(--hint-color);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            font-weight: 600;
+        }
+        .stat-card .s-value {
+            font-size: 20px;
+            font-weight: 800;
+            margin-top: 2px;
+            color: var(--text-color);
+        }
+
+        /* ── Sheet Tabs ── */
+        .tabs-scroller {
+            display: flex;
+            gap: 6px;
+            padding: 10px 14px 4px;
+            overflow-x: auto;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
+        }
+        .tabs-scroller::-webkit-scrollbar { display: none; }
+        .sheet-tab {
+            flex-shrink: 0;
+            padding: 7px 14px;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--hint-color);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .sheet-tab.active {
+            background: var(--btn-color);
+            color: var(--btn-text);
+            border-color: var(--btn-color);
+            box-shadow: 0 2px 10px var(--accent-glow);
+        }
+
+        /* ── Search ── */
+        .search-container {
+            padding: 10px 14px;
+            position: relative;
+        }
+        .search-input {
+            width: 100%;
+            padding: 9px 14px 9px 34px;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            color: var(--text-color);
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .search-input:focus { border-color: var(--btn-color); }
+        .search-input::placeholder { color: #52525b; }
+        .search-icon {
+            position: absolute;
+            left: 24px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 13px;
+            color: #71717a;
+            pointer-events: none;
+        }
+
+        /* ── Cards Grid ── */
+        .cards-list {
+            padding: 0 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        @media (min-width: 768px) {
+            .cards-list {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+            }
+        }
+
+        /* ── Individual Card ── */
+        .data-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            transition: opacity 0.25s ease, transform 0.25s ease;
+        }
+        .data-card.removing {
+            opacity: 0;
+            transform: scale(0.92);
+        }
+
+        /* Card Header */
+        .card-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding-bottom: 6px;
+        }
+        .card-id-tag {
+            background: var(--accent-glow);
+            color: #a5b4fc;
+            font-weight: 700;
+            font-size: 11px;
+            padding: 2px 7px;
+            border-radius: 6px;
+        }
+        .card-date {
+            font-size: 11px;
+            color: var(--hint-color);
+        }
+
+        /* Compact Grid */
+        .card-body-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 10px;
+        }
+        .field-box {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+        }
+        .field-box.full-width { grid-column: 1 / -1; }
+        .f-label {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            color: var(--hint-color);
+        }
+        .f-val {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-color);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* TC Box */
+        .tc-btn {
+            background: rgba(99, 102, 241, 0.12);
+            color: #a5b4fc;
+            border: 1px dashed rgba(99, 102, 241, 0.3);
+            border-radius: 7px;
+            padding: 4px 8px;
+            font-family: 'SF Mono', Consolas, monospace;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            width: 100%;
+            transition: all 0.15s;
+        }
+        .tc-btn:active {
+            transform: scale(0.97);
+            background: rgba(99, 102, 241, 0.25);
+        }
+        .tc-btn.copied {
+            background: rgba(34, 197, 94, 0.2) !important;
+            border-color: #22c55e !important;
+            color: #4ade80 !important;
+        }
+
+        /* Card Action Buttons */
+        .card-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 4px;
+            padding-top: 6px;
+            border-top: 1px solid rgba(255,255,255,0.05);
+        }
+        .act-btn {
+            flex: 1;
+            padding: 6px 8px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            background: rgba(255,255,255,0.04);
+            color: var(--text-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            transition: all 0.15s;
+        }
+        .act-btn:active { transform: scale(0.96); }
+        .act-btn.copy-all {
+            background: rgba(99, 102, 241, 0.12);
+            color: #a5b4fc;
+            border-color: rgba(99, 102, 241, 0.25);
+        }
+        .act-btn.copy-all.copied {
+            background: rgba(34, 197, 94, 0.2);
+            color: #4ade80;
+            border-color: #22c55e;
+        }
+        .act-btn.delete {
+            background: rgba(239, 68, 68, 0.1);
+            color: #f87171;
+            border-color: rgba(239, 68, 68, 0.25);
+        }
+        .act-btn.delete:hover {
+            background: rgba(239, 68, 68, 0.2);
+        }
+
+        /* ── Link Management Modal/View ── */
+        .links-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(12px);
+            z-index: 200;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+        .links-modal.open { display: flex; }
+        .modal-content {
+            background: #131620;
+            border: 1px solid var(--border-color);
+            border-radius: 18px;
+            width: 100%;
+            max-width: 480px;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+        }
+        .modal-head {
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-head h2 { font-size: 16px; font-weight: 700; }
+        .close-btn {
+            background: none;
+            border: none;
+            color: var(--hint-color);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 2px 6px;
+        }
+        .modal-body {
+            padding: 16px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        /* Add Sheet Form */
+        .add-sheet-box {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .add-sheet-box h3 { font-size: 13px; font-weight: 700; color: #a5b4fc; }
+        .form-input {
+            width: 100%;
+            padding: 9px 12px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: #fff;
+            font-size: 12px;
+            outline: none;
+        }
+        .form-input:focus { border-color: var(--btn-color); }
+        .submit-btn {
+            padding: 10px;
+            background: var(--btn-color);
+            color: var(--btn-text);
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .submit-btn:active { transform: scale(0.97); }
+
+        /* Sheet Items List */
+        .sheet-item {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .sheet-item-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .sheet-name { font-size: 13px; font-weight: 700; color: #fff; }
+        .status-tag {
+            font-size: 10px;
+            padding: 2px 7px;
+            border-radius: 10px;
+            font-weight: 700;
+        }
+        .status-tag.active {
+            background: rgba(34, 197, 94, 0.15);
+            color: #4ade80;
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+        .status-tag.passive {
+            background: rgba(113, 113, 122, 0.15);
+            color: #a1a1aa;
+            border: 1px solid rgba(113, 113, 122, 0.3);
+        }
+        .sheet-meta {
+            font-size: 11px;
+            color: var(--hint-color);
+            word-break: break-all;
+        }
+        .sheet-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
+        }
+        .sm-btn {
+            flex: 1;
+            padding: 6px;
+            border-radius: 7px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            background: rgba(255,255,255,0.05);
+            color: var(--text-color);
+            transition: all 0.15s;
+        }
+        .sm-btn.toggle { color: #60a5fa; }
+        .sm-btn.del { color: #f87171; border-color: rgba(239, 68, 68, 0.3); }
+
+        /* Toast Message */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: rgba(18, 20, 29, 0.95);
+            border: 1px solid var(--btn-color);
+            color: #fff;
+            padding: 10px 18px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.5);
+            z-index: 300;
+            transition: transform 0.3s ease;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+        .empty-box {
+            text-align: center;
+            padding: 50px 16px;
+            color: var(--hint-color);
+        }
+        .empty-box .e-icon { font-size: 32px; margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+    <div class="app-shell">
+        <!-- Top Navigation -->
+        <div class="top-bar">
+            <div class="top-title">
+                <span>📊</span>
+                <span>Admin Panel</span>
+            </div>
+            <div class="top-actions">
+                <button class="icon-btn primary" onclick="openLinksModal()" title="Link Yönetimi">🔗 Linkler</button>
+                <button class="icon-btn" onclick="location.reload()" title="Yenile">🔄</button>
+                <a href="/logout" class="icon-btn" title="Çıkış">🚪</a>
+            </div>
+        </div>
+
+        <!-- Stats Bar -->
+        <div class="stats-bar">
+            <div class="stat-card">
+                <div class="s-label">Toplam Kayıt</div>
+                <div class="s-value" id="stat-total-rows">{{ total_rows }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="s-label">Aktif Sheet</div>
+                <div class="s-value">{{ active_sheets_count }} / {{ total_sheets }}</div>
+            </div>
+        </div>
+
+        <!-- Sheet Tabs -->
+        <div class="tabs-scroller">
+            {% for sheet in sheets %}
+            <button class="sheet-tab {% if loop.first %}active{% endif %}" onclick="switchTab('tab-{{ sheet.id }}', this)">
+                {{ sheet.name }} ({{ sheet.visible_count }})
+            </button>
+            {% endfor %}
+        </div>
+
+        <!-- Sheet Panels -->
+        {% for sheet in sheets %}
+        <div id="tab-{{ sheet.id }}" class="tab-panel {% if loop.first %}active{% endif %}">
+            <div class="search-container">
+                <span class="search-icon">🔍</span>
+                <input type="text" class="search-input" placeholder="TC, telefon veya durum ara..." oninput="filterCards(this, 'list-{{ sheet.id }}')">
+            </div>
+
+            <div class="cards-list" id="list-{{ sheet.id }}">
+                {% if sheet.rows %}
+                    {% for row in sheet.rows|reverse %}
+                    <div class="data-card" id="card-{{ sheet.id }}-{{ row.num }}" data-search="{{ row.tc_no }} {{ row.phone }} {{ row.calisma_durumu }}">
+                        <div class="card-top">
+                            <span class="card-id-tag">#{{ row.num }}</span>
+                            <span class="card-date">🕒 {{ row.created_time }}</span>
+                        </div>
+                        <div class="card-body-grid">
+                            <div class="field-box">
+                                <span class="f-label">Durum</span>
+                                <span class="f-val">{{ row.calisma_durumu }}</span>
+                            </div>
+                            <div class="field-box">
+                                <span class="f-label">Kart Limiti</span>
+                                <span class="f-val">{{ row.kart_limit }}</span>
+                            </div>
+                            <div class="field-box full-width">
+                                <span class="f-label">T.C. Kimlik</span>
+                                <div class="tc-btn" onclick="copyTC(this, '{{ row.tc_no }}')">
+                                    <span>{{ row.tc_no }}</span>
+                                    <span style="font-size:11px; opacity:0.8;">📋 Kopyala</span>
+                                </div>
+                            </div>
+                            <div class="field-box full-width">
+                                <span class="f-label">Telefon Numarası</span>
+                                <span class="f-val">{{ row.phone }}</span>
+                            </div>
+                        </div>
+
+                        <!-- Card Action Buttons -->
+                        <div class="card-actions">
+                            <button type="button" class="act-btn copy-all" onclick="copyFullRecord(this, '{{ row.num }}', '{{ row.created_time }}', '{{ row.calisma_durumu }}', '{{ row.tc_no }}', '{{ row.kart_limit }}', '{{ row.phone }}')">
+                                <span>📋</span>
+                                <span>Tümünü Kopyala</span>
+                            </button>
+                            <button type="button" class="act-btn delete" onclick="deleteRecordPrompt('{{ sheet.id }}', '{{ row.num }}')">
+                                <span>🗑️</span>
+                                <span>Sil (Chatten de)</span>
+                            </button>
+                        </div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-box">
+                        <div class="e-icon">📭</div>
+                        <p>Henüz kayıt bulunamadı</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Links Management Modal -->
+    <div class="links-modal" id="linksModal">
+        <div class="modal-content">
+            <div class="modal-head">
+                <h2>🔗 Link & Sheet Yönetimi</h2>
+                <button class="close-btn" onclick="closeLinksModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <!-- Add Form -->
+                <div class="add-sheet-box">
+                    <h3>+ Yeni Google Sheets Linki Ekle</h3>
+                    <input type="text" id="newSheetName" class="form-input" placeholder="Sheet Adı (Örn: 2. Satış Formu)">
+                    <input type="url" id="newSheetUrl" class="form-input" placeholder="https://docs.google.com/spreadsheets/d/.../edit">
+                    <button type="button" class="submit-btn" onclick="submitAddSheet()">+ Sheet Ekle</button>
+                </div>
+
+                <!-- Existing Sheets List -->
+                <div style="font-size:12px; font-weight:700; color:var(--hint-color); text-transform:uppercase;">Kayıtlı Linkler</div>
+                <div id="sheetsListContainer" style="display:flex; flex-direction:column; gap:8px;">
+                    {% for s in all_sheets_raw %}
+                    <div class="sheet-item" id="sheet-item-{{ s.id }}">
+                        <div class="sheet-item-top">
+                            <span class="sheet-name">{{ s.name }}</span>
+                            <span class="status-tag {% if s.active %}active{% else %}passive{% endif %}">
+                                {% if s.active %}🟢 Aktif{% else %}⚪ Pasif{% endif %}
+                            </span>
+                        </div>
+                        <div class="sheet-meta">
+                            Kayıt: <b>{{ s.count }}</b> | Durum: <b>{{ s.status }}</b><br>
+                            Son Kontrol: {{ s.last_check }}
+                        </div>
+                        <div class="sheet-actions">
+                            <button class="sm-btn toggle" onclick="toggleSheet('{{ s.id }}')">
+                                {% if s.active %}Duraklat (Pasif){% else %}Aktif Et{% endif %}
+                            </button>
+                            <button class="sm-btn del" onclick="removeSheet('{{ s.id }}', '{{ s.name }}')">
+                                🗑️ Sil
+                            </button>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast">Bildirim</div>
+
+    <script>
+        if (window.Telegram && Telegram.WebApp) {
+            Telegram.WebApp.ready();
+            Telegram.WebApp.expand();
+            Telegram.WebApp.headerColor = Telegram.WebApp.themeParams.bg_color || '#0c0e14';
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById("toast");
+            toast.innerText = msg;
+            toast.classList.add("show");
+            setTimeout(() => toast.classList.remove("show"), 2200);
+        }
+
+        function triggerHaptic(type = "light") {
+            if (window.Telegram && Telegram.WebApp && Telegram.WebApp.HapticFeedback) {
+                Telegram.WebApp.HapticFeedback.notificationOccurred(type === "success" ? "success" : "warning");
+            }
+        }
+
+        function switchTab(panelId, tabEl) {
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+            const target = document.getElementById(panelId);
+            if (target) target.classList.add('active');
+            tabEl.classList.add('active');
+        }
+
+        function filterCards(input, containerId) {
+            const q = input.value.toLowerCase().trim();
+            const cards = document.querySelectorAll('#' + containerId + ' .data-card');
+            cards.forEach(c => {
+                const txt = c.getAttribute('data-search').toLowerCase();
+                c.style.display = txt.includes(q) ? '' : 'none';
+            });
+        }
+
+        // ── Kopyalama Fonksiyonları ──
+
+        function copyTC(btn, tc) {
+            navigator.clipboard.writeText(tc).then(() => {
+                btn.classList.add('copied');
+                const prev = btn.innerHTML;
+                btn.innerHTML = '<span>' + tc + '</span><span style="font-size:11px;">✓ Kopyalandı</span>';
+                triggerHaptic("success");
+                showToast("T.C. panoya kopyalandı!");
+                setTimeout(() => {
+                    btn.innerHTML = prev;
+                    btn.classList.remove('copied');
+                }, 1200);
+            });
+        }
+
+        function copyFullRecord(btn, num, date, durum, tc, limit, phone) {
+            const text = "📋 Kayıt #" + num + "\\n" +
+                         "━━━━━━━━━━━━━━━━━━━━━━\\n" +
+                         "🕐 Tarih: " + date + "\\n" +
+                         "💼 Çalışma Durumu: " + durum + "\\n" +
+                         "🆔 T.C. No: " + tc + "\\n" +
+                         "💳 Kart Limiti: " + limit + "\\n" +
+                         "📞 Telefon: " + phone + "\\n" +
+                         "━━━━━━━━━━━━━━━━━━━━━━";
+
+            navigator.clipboard.writeText(text).then(() => {
+                btn.classList.add('copied');
+                const prev = btn.innerHTML;
+                btn.innerHTML = '<span>✓</span><span>Kopyalandı!</span>';
+                triggerHaptic("success");
+                showToast("Tüm kayıt panoya kopyalandı!");
+                setTimeout(() => {
+                    btn.innerHTML = prev;
+                    btn.classList.remove('copied');
+                }, 1500);
+            });
+        }
+
+        // ── Kayıt Silme Fonksiyonu ──
+
+        function deleteRecordPrompt(sheetId, rowNum) {
+            if (!confirm("#" + rowNum + " numaralı kayıt panelden ve Telegram grubundan silinsin mi?")) {
+                return;
+            }
+
+            fetch("/api/delete-record", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sheet_id: sheetId, row_num: rowNum })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.ok) {
+                    const card = document.getElementById("card-" + sheetId + "-" + rowNum);
+                    if (card) {
+                        card.classList.add("removing");
+                        setTimeout(() => card.remove(), 250);
+                    }
+                    triggerHaptic("success");
+                    showToast(data.message || "Kayıt başarıyla silindi!");
+                } else {
+                    alert("Hata: " + (data.error || "Silinemedi"));
+                }
+            })
+            .catch(err => alert("Bağlantı hatası: " + err));
+        }
+
+        // ── Link Yönetimi Modalı ──
+
+        function openLinksModal() {
+            document.getElementById("linksModal").classList.add("open");
+        }
+        function closeLinksModal() {
+            document.getElementById("linksModal").classList.remove("open");
+        }
+
+        function submitAddSheet() {
+            const name = document.getElementById("newSheetName").value.trim();
+            const url = document.getElementById("newSheetUrl").value.trim();
+
+            if (!url) {
+                alert("Lütfen geçerli bir Google Sheets linki girin.");
+                return;
+            }
+
+            fetch("/api/add-sheet", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: name, url: url })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.ok) {
+                    showToast("Sheet eklendi! Yenileniyor...");
+                    triggerHaptic("success");
+                    setTimeout(() => location.reload(), 800);
+                } else {
+                    alert("Hata: " + data.error);
+                }
+            })
+            .catch(err => alert("İstek hatası: " + err));
+        }
+
+        function toggleSheet(sheetId) {
+            fetch("/api/toggle-sheet", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sheet_id: sheetId })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.ok) {
+                    showToast("Sheet durumu güncellendi!");
+                    setTimeout(() => location.reload(), 600);
+                } else {
+                    alert("Hata: " + data.error);
+                }
+            });
+        }
+
+        function removeSheet(sheetId, name) {
+            if (!confirm("'" + name + "' sheet linkini silmek istediğinize emin misiniz?")) {
+                return;
+            }
+
+            fetch("/api/delete-sheet", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sheet_id: sheetId })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.ok) {
+                    showToast("Sheet silindi!");
+                    setTimeout(() => location.reload(), 600);
+                } else {
+                    alert("Hata: " + data.error);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
+"""
+
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    ip = get_client_ip()
+    allowed, remaining, wait_sec = check_rate_limit(ip)
+
+    if not allowed:
+        return render_template_string(
+            LOGIN_HTML,
+            locked=True,
+            wait_sec=wait_sec,
+            error=None,
+            remaining=0,
+        )
+
+    error = None
+    if request.method == "POST":
+        pin = request.form.get("pin", "")
+        if pin == ADMIN_PIN:
+            record_successful_login(ip)
+            session["logged_in"] = True
+            return redirect(url_for("dashboard"))
+        else:
+            rem, wait = record_failed_attempt(ip)
+            if rem == 0:
+                return render_template_string(
+                    LOGIN_HTML,
+                    locked=True,
+                    wait_sec=wait,
+                    error=None,
+                    remaining=0,
+                )
+            error = "Yanlış PIN kodu!"
+            remaining = rem
+
+    return render_template_string(
+        LOGIN_HTML,
+        locked=False,
+        wait_sec=0,
+        error=error,
+        remaining=remaining,
+    )
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/")
+@login_required
+def dashboard():
+    all_sheets_raw = get_sheets()
+    sheets_data = []
+    total_rows = 0
+    active_count = 0
+
+    for sheet_config in all_sheets_raw:
+        sheet_id = sheet_config.get("id")
+        if not sheet_id:
+            try:
+                sheet_id = extract_sheet_id(sheet_config["url"])
+            except Exception:
+                continue
+
+        if sheet_config.get("active", True):
+            active_count += 1
+
+        sheet_info = {
+            "id": sheet_id,
+            "name": sheet_config.get("name", "Form"),
+            "url": sheet_config.get("url", ""),
+            "active": sheet_config.get("active", True),
+            "status": sheet_config.get("status", "Aktif"),
+            "last_check": sheet_config.get("last_check", "—"),
+            "count": 0,
+            "visible_count": 0,
+            "rows": []
+        }
+
+        try:
+            raw_rows = fetch_sheet_data(sheet_id)
+            if raw_rows:
+                headers = list(raw_rows[0].keys())
+                col_mapping = find_column_mapping(headers)
+
+                for i, row in enumerate(raw_rows):
+                    # Panelden silinmiş kayıtları gösterme
+                    if is_record_deleted(sheet_id, i):
+                        continue
+
+                    created_raw = row.get(col_mapping.get("created_time", ""), "")
+                    sheet_info["rows"].append({
+                        "num": i,
+                        "created_time": convert_to_turkey_time(created_raw),
+                        "calisma_durumu": row.get(col_mapping.get("çalışma_durumu", ""), "—"),
+                        "tc_no": row.get(col_mapping.get("t.c_numaranız", ""), "—"),
+                        "kart_limit": row.get(col_mapping.get("kullanılabilir_kart_limitiniz", ""), "—"),
+                        "phone": row.get(col_mapping.get("phone_number", ""), "—"),
+                    })
+
+                sheet_info["count"] = len(raw_rows)
+                sheet_info["visible_count"] = len(sheet_info["rows"])
+                total_rows += sheet_info["visible_count"]
+
+        except Exception as e:
+            logger.error(f"Sheet verisi çekilemedi ({sheet_info['name']}): {e}")
+            sheet_info["status"] = "Hata"
+
+        sheets_data.append(sheet_info)
+
+    return render_template_string(
+        DASHBOARD_HTML,
+        sheets=sheets_data,
+        all_sheets_raw=all_sheets_raw,
+        total_sheets=len(all_sheets_raw),
+        active_sheets_count=active_count,
+        total_rows=total_rows,
+    )
+
+
+# ── REST API Endpoints ───────────────────────────────────────────────────────
+
+@app.route("/api/add-sheet", methods=["POST"])
+@login_required
+def api_add_sheet():
+    data = request.get_json() or {}
+    name = data.get("name", "")
+    url = data.get("url", "")
+    success, msg = add_sheet(name, url)
+    if success:
+        return jsonify({"ok": True, "message": msg})
+    return jsonify({"ok": False, "error": msg}), 400
+
+
+@app.route("/api/delete-sheet", methods=["POST"])
+@login_required
+def api_delete_sheet():
+    data = request.get_json() or {}
+    sheet_id = data.get("sheet_id", "")
+    if delete_sheet(sheet_id):
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Sheet silinemedi."}), 400
+
+
+@app.route("/api/toggle-sheet", methods=["POST"])
+@login_required
+def api_toggle_sheet():
+    data = request.get_json() or {}
+    sheet_id = data.get("sheet_id", "")
+    if toggle_sheet_active(sheet_id):
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Durum değiştirilemedi."}), 400
+
+
+@app.route("/api/delete-record", methods=["POST"])
+@login_required
+def api_delete_record():
+    data = request.get_json() or {}
+    sheet_id = data.get("sheet_id", "")
+    row_num = data.get("row_num")
+
+    if not sheet_id or row_num is None:
+        return jsonify({"ok": False, "error": "Geçersiz parametreler."}), 400
+
+    try:
+        success, msg = delete_record(sheet_id, int(row_num))
+        return jsonify({"ok": success, "message": msg})
+    except Exception as e:
+        logger.error(f"Kayıt silme hatası: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=WEB_PORT, debug=False)
