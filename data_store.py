@@ -605,6 +605,13 @@ def get_record_status(sheet_id: str, row_num: int) -> dict:
     return state.get(sheet_id, {}).get("statuses", {}).get(str(row_num), {})
 
 
+def get_original_message_id(sheet_id: str, row_num: int) -> int | None:
+    """Kaydın ana gruptaki orijinal mesaj ID'sini döner."""
+    state = load_state()
+    msg_id = state.get(sheet_id, {}).get("messages", {}).get(str(row_num))
+    return int(msg_id) if msg_id else None
+
+
 def record_forward_event(sheet_id: str, row_num: int, target_chat_id: str, target_chat_name: str, target_msg_id: int, user_name: str):
     """Kaydın bir gruba aktarıldığını ve aktarım saatini kaydeder."""
     state = load_state()

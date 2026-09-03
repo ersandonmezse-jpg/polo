@@ -62,6 +62,7 @@ from data_store import (
     record_forward_event,
     get_forward_event,
     format_duration,
+    get_original_message_id,
     normalize_phone,
     save_client_profile,
     check_client_history,
@@ -197,23 +198,27 @@ def format_message(entry_number: int, row: dict, col_mapping: dict, sheet_name: 
     return message
 
 
-def build_record_keyboard(sheet_id: str, row_num: int) -> dict:
+def build_record_keyboard(sheet_id: str, row_num: int, is_forwarded: bool = False) -> dict:
     """Kayıt altına yerleştirilecek standart etkileşim butonları."""
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "📝 Not Ekle", "callback_data": f"note_req:{sheet_id}:{row_num}"},
-                {"text": "🔴 Olumsuz", "callback_data": f"st:{sheet_id}:{row_num}:olumsuz"}
-            ],
-            [
-                {"text": "💳 Kredi Düştü", "callback_data": f"kredi_req:{sheet_id}:{row_num}"},
-                {"text": "📵 Cevapsız", "callback_data": f"st:{sheet_id}:{row_num}:cevapsiz"}
-            ],
-            [
-                {"text": "↗️ Gruba Aktar", "callback_data": f"fwd_menu:{sheet_id}:{row_num}"}
-            ]
+    buttons = [
+        [
+            {"text": "📝 Not Ekle", "callback_data": f"note_req:{sheet_id}:{row_num}"},
+            {"text": "🔴 Olumsuz", "callback_data": f"st:{sheet_id}:{row_num}:olumsuz"}
+        ],
+        [
+            {"text": "💳 Kredi Düştü", "callback_data": f"kredi_req:{sheet_id}:{row_num}"},
+            {"text": "📵 Cevapsız", "callback_data": f"st:{sheet_id}:{row_num}:cevapsiz"}
         ]
-    }
+    ]
+    if is_forwarded:
+        buttons.append([
+            {"text": "🏁 İşi Bitir & Geri Çek", "callback_data": f"islem_bitti:{sheet_id}:{row_num}"}
+        ])
+    else:
+        buttons.append([
+            {"text": "↗️ Gruba Aktar", "callback_data": f"fwd_menu:{sheet_id}:{row_num}"}
+        ])
+    return {"inline_keyboard": buttons}
 
 
 def send_telegram_message(text: str, chat_id: str = None, reply_markup: dict = None, reply_to_message_id: int = None) -> tuple[bool, int | None]:
@@ -791,31 +796,35 @@ def listen_telegram_updates():
                                 delete_telegram_message(target_chat_id, target_msg_id)
                                 logger.info(f"Kayıt #{row_num} aktarılan gruptan ({target_g_name}) geri çekildi.")
 
-                        # 2) Bulunulan mesajı güncelle
-                        edit_telegram_message(
-                            chat_id, message_id,
-                            html.escape(original_text) + f"\n\n🏁 <b>İşlem Başarıyla Tamamlandı</b> ({html.escape(user_tag)} - {now_time})\n<i>🔄 Veri ana data grubuna geri çekildi.</i>",
-                            reply_markup=None
-                        )
+                        # Eğer buton işlem grubunda tıklandıysa ve target_chat_id ile bu chat aynıysa bu mesajı sil
+                        if str(chat_id) != str(TELEGRAM_CHAT_ID):
+                            delete_telegram_message(chat_id, message_id)
+                        else:
+                            # Ana gruptaysa durumunu güncelle
+                            edit_telegram_message(
+                                chat_id, message_id,
+                                original_text.split("\n\n🏁")[0].split("\n\n<i>")[0] + f"\n\n🏁 <b>İşlem Başarıyla Tamamlandı</b> ({html.escape(user_tag)} - {now_time})\n<i>🔄 Veri ana gruba geri çekildi.</i>",
+                                reply_markup=None
+                            )
 
                         # 3) ANA DATA GRUBUNA GERİ ÇEKME & DETAYLI SÜRE ANALİZ RAPORU GÖNDER
                         main_chat_id = TELEGRAM_CHAT_ID
                         if main_chat_id:
-                            clean_base = original_text.split("\n\n🏁")[0].split("\n\n<i>")[0]
+                            clean_base = original_text.split("\n\n🏁")[0].split("\n\n<i>")[0].split("\n\n❓")[0]
                             analiz_raporu = (
-                                f"📥 <b>DATA GERİ ÇEKİLDİ & SÜRE ANALİZ RAPORU</b>\n"
+                                f"📥 <b>DATA GERİ ÇEKİLDİ & İŞLEM RAPORU</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                                 f"📋 <b>Kayıt:</b> #{row_num}\n"
-                                f"🏢 <b>İşlem Yapılan Grup:</b> <b>{html.escape(target_g_name)}</b>\n"
-                                f"🚀 <b>Aktarım Saati:</b> {fwd_time_str}\n"
-                                f"🎯 <b>Tamamlanma Saati:</b> {now_time}\n"
+                                f"🏢 <b>İşlem Grubu:</b> <b>{html.escape(target_g_name)}</b>\n"
                                 f"⏱️ <b>Grupta Kalma Süresi:</b> <b>{duration_str}</b>\n"
-                                f"👤 <b>İşlemi Tamamlayan:</b> {html.escape(user_tag)}\n"
-                                f"📌 <b>Son Durum:</b> {html.escape(status_text)}\n"
+                                f"👤 <b>İşlemi Yapan:</b> {html.escape(user_tag)}\n"
+                                f"📌 <b>Nihai Yanıt / Durum:</b> <b>{html.escape(status_text)}</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                                 f"{clean_base}"
                             )
-                            send_telegram_message(analiz_raporu, chat_id=main_chat_id)
+                            # Orijinal mesaj varsa ona yanıt olarak gönder, yoksa doğrudan ana gruba at
+                            orig_msg_id = get_original_message_id(sheet_id, row_num)
+                            send_telegram_message(analiz_raporu, chat_id=main_chat_id, reply_to_message_id=orig_msg_id)
 
                     # 1.7) Gruba Aktar Menüsü
                     elif cq_data.startswith("fwd_menu:"):
@@ -880,7 +889,7 @@ def listen_telegram_updates():
                         success, target_msg_id = send_telegram_message(
                             clean_lead_text + f"\n\n<i>(Aktaran: {html.escape(user_tag)})</i>",
                             chat_id=target_chat_id,
-                            reply_markup=build_record_keyboard(sheet_id, row_num)
+                            reply_markup=build_record_keyboard(sheet_id, row_num, is_forwarded=True)
                         )
 
                         # Aktarım olayını, hedef grup ve mesaj ID'sini kaydet (Geri çekme ve süre analizi için)

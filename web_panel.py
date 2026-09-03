@@ -1000,9 +1000,14 @@ DASHBOARD_HTML = """
         <!-- Sheet Panels -->
         {% for sheet in sheets %}
         <div id="tab-{{ sheet.id }}" class="tab-panel {% if loop.first %}active{% endif %}">
-            <div class="search-container">
-                <span class="search-icon">🔍</span>
-                <input type="text" class="search-input" placeholder="TC, telefon veya durum ara..." oninput="filterCards(this, 'list-{{ sheet.id }}')">
+            <div class="search-container" style="display:flex; gap:8px; align-items:center;">
+                <div style="position:relative; flex:1;">
+                    <span class="search-icon" style="position:absolute; left:12px; top:50%; transform:translateY(-50%);">🔍</span>
+                    <input type="text" class="search-input" style="padding-left:34px;" placeholder="TC, telefon veya durum ara..." oninput="filterCards(this, 'list-{{ sheet.id }}')">
+                </div>
+                <button type="button" class="f-btn" id="sort-btn-{{ sheet.id }}" onclick="toggleSortOrder('list-{{ sheet.id }}', this)" title="Kayıt Numarasına Göre Sırala">
+                    🔢 Yeniden Eskiye (Varsayılan)
+                </button>
             </div>
 
             <div class="cards-list" id="list-{{ sheet.id }}">
@@ -1199,6 +1204,24 @@ DASHBOARD_HTML = """
                 const txt = c.getAttribute('data-search').toLowerCase();
                 c.style.display = txt.includes(q) ? '' : 'none';
             });
+        }
+
+        function toggleSortOrder(containerId, btn) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            const cards = Array.from(container.children);
+            cards.reverse();
+            cards.forEach(c => container.appendChild(c));
+
+            const isAsc = btn.getAttribute('data-asc') === 'true';
+            if (isAsc) {
+                btn.setAttribute('data-asc', 'false');
+                btn.innerHTML = '🔢 Yeniden Eskiye';
+            } else {
+                btn.setAttribute('data-asc', 'true');
+                btn.innerHTML = '🔢 Eskiden Yeniye';
+            }
+            triggerHaptic("selection");
         }
 
         // ── Kopyalama Fonksiyonları ──
