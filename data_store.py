@@ -350,7 +350,7 @@ def record_message_sent(sheet_id: str, row_num: int, message_id: int):
 def set_record_status(sheet_id: str, row_num: int, status: str, user_name: str = ""):
     """Kaydın durumunu (Not Eklendi, Olumsuz, Kredi Düştü, vb.) günceller."""
     state = load_state()
-    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []})
+    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "forwarded": {}, "deleted": []})
     statuses = sheet_st.setdefault("statuses", {})
     statuses[str(row_num)] = {
         "status": status,
@@ -363,6 +363,43 @@ def set_record_status(sheet_id: str, row_num: int, status: str, user_name: str =
 def get_record_status(sheet_id: str, row_num: int) -> dict:
     state = load_state()
     return state.get(sheet_id, {}).get("statuses", {}).get(str(row_num), {})
+
+
+def record_forward_event(sheet_id: str, row_num: int, target_chat_id: str, target_chat_name: str, target_msg_id: int, user_name: str):
+    """Kaydın bir gruba aktarıldığını ve aktarım saatini kaydeder."""
+    state = load_state()
+    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "forwarded": {}, "deleted": []})
+    fwd_dict = sheet_st.setdefault("forwarded", {})
+    fwd_dict[str(row_num)] = {
+        "target_chat_id": str(target_chat_id),
+        "target_chat_name": target_chat_name,
+        "target_msg_id": target_msg_id,
+        "fwd_user": user_name,
+        "fwd_timestamp": time.time(),
+        "fwd_time_str": time.strftime("%H:%M:%S"),
+    }
+    save_state(state)
+
+
+def get_forward_event(sheet_id: str, row_num: int) -> dict | None:
+    state = load_state()
+    return state.get(sheet_id, {}).get("forwarded", {}).get(str(row_num))
+
+
+def format_duration(seconds: float) -> str:
+    """Saniyeyi insansı 'X Saat Y Dk Z Sn' formatına çevirir."""
+    sec = int(seconds)
+    hours = sec // 3600
+    minutes = (sec % 3600) // 60
+    remaining_sec = sec % 60
+
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours} saat")
+    if minutes > 0:
+        parts.append(f"{minutes} dk")
+    parts.append(f"{remaining_sec} sn")
+    return " ".join(parts)
 
 
 # ── Bekleyen Kullanıcı Yanıtları (Not, Tutar, IBAN) ──────────────────────────

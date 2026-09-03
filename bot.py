@@ -59,6 +59,9 @@ from data_store import (
     get_pending_action,
     clear_pending_action,
     set_saha_rate,
+    record_forward_event,
+    get_forward_event,
+    format_duration,
 )
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -236,6 +239,16 @@ def edit_telegram_message(chat_id: int | str, message_id: int, text: str, reply_
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
         logger.error(f"Mesaj düzenleme hatası: {e}")
+
+
+def delete_telegram_message(chat_id: int | str, message_id: int):
+    if not TELEGRAM_BOT_TOKEN or not message_id:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
+    try:
+        requests.post(url, json={"chat_id": chat_id, "message_id": message_id}, timeout=8)
+    except Exception as e:
+        logger.error(f"Mesaj silme hatası: {e}")
 
 
 def answer_callback_query(callback_query_id: str, text: str = "", show_alert: bool = False):
@@ -664,20 +677,67 @@ def listen_telegram_updates():
                             reply_markup=build_record_keyboard(sheet_id, row_num)
                         )
 
-                    # 1.6.H) "🏁 İşlem Bitti" Tıklandı
+                    # 1.6.H) "🏁 İşlem Bitti" Tıklandı -> DATAYI GERİ ÇEK VE SÜRE ANALİZİ RAPORLA
                     elif cq_data.startswith("islem_bitti:"):
                         parts = cq_data.split(":")
                         sheet_id = parts[1]
                         row_num = int(parts[2])
                         amt_str = parts[3] if len(parts) > 3 else ""
 
-                        set_record_status(sheet_id, row_num, f"🏁 İşlem Bitti ({amt_str})", user_tag)
-                        answer_callback_query(cq_id, "İşlem başarıyla tamamlandı ve kapatıldı! 🏁", show_alert=True)
+                        status_text = f"🏁 İşlem Bitti ({amt_str})" if amt_str else "🏁 İşlem Bitti"
+                        set_record_status(sheet_id, row_num, status_text, user_tag)
+                        answer_callback_query(cq_id, "İşlem tamamlandı, veri ana gruba geri çekiliyor... 🏁", show_alert=True)
+
+                        now_time = datetime.now(TURKEY_TZ).strftime("%H:%M:%S")
+                        now_ts = time.time()
+
+                        # Aktarım bilgilerini kontrol et
+                        fwd_info = get_forward_event(sheet_id, row_num)
+                        duration_str = "Bilinmiyor"
+                        target_g_name = "Aktarılan Grup"
+                        fwd_user = "Bilinmiyor"
+                        fwd_time_str = "Bilinmiyor"
+
+                        if fwd_info:
+                            target_chat_id = fwd_info.get("target_chat_id")
+                            target_msg_id = fwd_info.get("target_msg_id")
+                            target_g_name = fwd_info.get("target_chat_name", "Aktarılan Grup")
+                            fwd_user = fwd_info.get("fwd_user", "Temsilci")
+                            fwd_time_str = fwd_info.get("fwd_time_str", "")
+                            fwd_ts = fwd_info.get("fwd_timestamp", now_ts)
+                            diff_sec = max(0, now_ts - fwd_ts)
+                            duration_str = format_duration(diff_sec)
+
+                            # 1) AKTARILAN HEDEF GRUPTAKİ MESAJI SİL / GERİ ÇEK
+                            if target_chat_id and target_msg_id:
+                                delete_telegram_message(target_chat_id, target_msg_id)
+                                logger.info(f"Kayıt #{row_num} aktarılan gruptan ({target_g_name}) geri çekildi.")
+
+                        # 2) Bulunulan mesajı güncelle
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + f"\n\n🏁 <b>İşlem Başarıyla Tamamlandı & Kapatıldı</b> ({html.escape(user_tag)})",
+                            html.escape(original_text) + f"\n\n🏁 <b>İşlem Başarıyla Tamamlandı</b> ({html.escape(user_tag)} - {now_time})\n<i>🔄 Veri ana data grubuna geri çekildi.</i>",
                             reply_markup=None
                         )
+
+                        # 3) ANA DATA GRUBUNA GERİ ÇEKME & DETAYLI SÜRE ANALİZ RAPORU GÖNDER
+                        main_chat_id = TELEGRAM_CHAT_ID
+                        if main_chat_id:
+                            clean_base = original_text.split("\n\n🏁")[0].split("\n\n<i>")[0]
+                            analiz_raporu = (
+                                f"📥 <b>DATA GERİ ÇEKİLDİ & SÜRE ANALİZ RAPORU</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📋 <b>Kayıt:</b> #{row_num}\n"
+                                f"🏢 <b>İşlem Yapılan Grup:</b> <b>{html.escape(target_g_name)}</b>\n"
+                                f"🚀 <b>Aktarım Saati:</b> {fwd_time_str}\n"
+                                f"🎯 <b>Tamamlanma Saati:</b> {now_time}\n"
+                                f"⏱️ <b>Grupta Kalma Süresi:</b> <b>{duration_str}</b>\n"
+                                f"👤 <b>İşlemi Tamamlayan:</b> {html.escape(user_tag)}\n"
+                                f"📌 <b>Son Durum:</b> {html.escape(status_text)}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"{html.escape(clean_base)}"
+                            )
+                            send_telegram_message(analiz_raporu, chat_id=main_chat_id)
 
                     # 1.7) Gruba Aktar Menüsü
                     elif cq_data.startswith("fwd_menu:"):
@@ -739,11 +799,15 @@ def listen_telegram_updates():
 
                         clean_lead_text = original_text.split("\n\n❓")[0].split("\n\n<i>↪️")[0]
 
-                        send_telegram_message(
+                        success, target_msg_id = send_telegram_message(
                             html.escape(clean_lead_text) + f"\n\n<i>(Aktaran: {html.escape(user_tag)})</i>",
                             chat_id=target_chat_id,
                             reply_markup=build_record_keyboard(sheet_id, row_num)
                         )
+
+                        # Aktarım olayını, hedef grup ve mesaj ID'sini kaydet (Geri çekme ve süre analizi için)
+                        if target_msg_id:
+                            record_forward_event(sheet_id, row_num, target_chat_id, target_name, target_msg_id, user_tag)
 
                         now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
                         updated_orig = (

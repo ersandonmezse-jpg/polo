@@ -39,6 +39,8 @@ from data_store import (
     add_group,
     delete_group,
     get_record_status,
+    get_forward_event,
+    format_duration,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -932,6 +934,11 @@ DASHBOARD_HTML = """
                                     {{ row.lead_status }}
                                 </span>
                                 {% endif %}
+                                {% if row.stay_duration %}
+                                <span style="font-size:10px; font-weight:700; background:rgba(234,179,8,0.15); color:#facc15; border:1px solid rgba(234,179,8,0.3); padding:1px 6px; border-radius:6px;" title="Aktarılan: {{ row.fwd_group }}">
+                                    ⏱️ {{ row.stay_duration }}
+                                </span>
+                                {% endif %}
                             </div>
                             <span class="card-date">🕒 {{ row.created_time }}</span>
                         </div>
@@ -1404,6 +1411,13 @@ def dashboard():
 
                     created_raw = row.get(col_mapping.get("created_time", ""), "")
                     st_info = get_record_status(sheet_id, i)
+                    fwd_ev = get_forward_event(sheet_id, i)
+                    fwd_group = fwd_ev.get("target_chat_name", "") if fwd_ev else ""
+                    stay_dur = ""
+                    if fwd_ev:
+                        diff = max(0, time.time() - fwd_ev.get("fwd_timestamp", time.time()))
+                        stay_dur = format_duration(diff)
+
                     sheet_info["rows"].append({
                         "num": i,
                         "created_time": convert_to_turkey_time(created_raw),
@@ -1414,6 +1428,8 @@ def dashboard():
                         "lead_status": st_info.get("status", ""),
                         "lead_user": st_info.get("user", ""),
                         "lead_time": st_info.get("time", ""),
+                        "fwd_group": fwd_group,
+                        "stay_duration": stay_dur,
                     })
 
                 sheet_info["count"] = len(raw_rows)
