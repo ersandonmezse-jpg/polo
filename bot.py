@@ -1006,10 +1006,12 @@ def listen_telegram_updates():
                             )
                         continue
 
+                    cmd = text.lower()
+
                     # 2.B) STANDART KOMUTLAR
 
                     # /sahaorani Komutu (Örn: /sahaorani 15 veya /sahaorani 20)
-                    if text.startswith("/sahaorani"):
+                    if cmd.startswith("/sahaorani"):
                         parts = text.split()
                         if len(parts) > 1:
                             try:
@@ -1030,7 +1032,7 @@ def listen_telegram_updates():
                         continue
 
                     # /help veya /yardim Komutu
-                    if text.startswith("/help") or text.startswith("/yardim"):
+                    elif cmd.startswith("/help") or cmd.startswith("/yardim"):
                         help_text = (
                             "📖 <b>BOT KULLANIM KILAVUZU & TÜM KOMUTLAR</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1068,7 +1070,7 @@ def listen_telegram_updates():
                         continue
 
                     # /start Komutu
-                    if text.startswith("/start"):
+                    elif cmd.startswith("/start"):
                         welcome_text = (
                             "👋 <b>Google Sheets Saha & Finans Botu Aktif!</b>\n\n"
                             "Komutlar:\n"
@@ -1085,7 +1087,7 @@ def listen_telegram_updates():
                         send_telegram_message(welcome_text, chat_id=from_chat_id, reply_markup=markup)
 
                     # /saha_grubu Komutu
-                    elif text.startswith("/saha_grubu"):
+                    elif cmd.startswith("/saha_grubu"):
                         g_title = msg["chat"].get("title") or "Saha Grubu"
                         set_saha_group(str(from_chat_id), g_title)
                         send_telegram_message(
@@ -1097,7 +1099,7 @@ def listen_telegram_updates():
                         )
 
                     # /sahaci veya /sahaciyim Komutu
-                    elif text.startswith("/sahaci") or text.startswith("/sahaciyim"):
+                    elif cmd.startswith("/sahaci") or cmd.startswith("/sahaciyim"):
                         if from_user.get("username"):
                             u_tag = f"@{from_user.get('username')}"
                             add_sahaci_user(u_tag)
@@ -1113,7 +1115,7 @@ def listen_telegram_updates():
                             )
 
                     # /grup_ekle Komutu
-                    elif text.startswith("/grup_ekle"):
+                    elif cmd.startswith("/grup_ekle"):
                         parts = text.split(maxsplit=1)
                         g_name = parts[1].strip() if len(parts) > 1 else (msg["chat"].get("title") or "Yeni Grup")
                         success, resp_msg = add_group(g_name, str(from_chat_id))
@@ -1124,7 +1126,7 @@ def listen_telegram_updates():
                         send_telegram_message(reply, chat_id=from_chat_id)
 
                     # /link Komutu
-                    elif text.startswith("/link") or "docs.google.com/spreadsheets" in text:
+                    elif cmd.startswith("/link") or "docs.google.com/spreadsheets" in text:
                         parts = text.split(maxsplit=1)
                         target_url = parts[1].strip() if len(parts) > 1 else text.strip()
 
@@ -1155,7 +1157,7 @@ def listen_telegram_updates():
                         send_telegram_message(reply_msg, chat_id=from_chat_id)
 
                     # /durum Komutu
-                    elif text.startswith("/durum"):
+                    elif cmd.startswith("/durum"):
                         sheets = get_sheets()
                         groups = get_groups()
                         settings = get_settings()
@@ -1177,7 +1179,7 @@ def listen_telegram_updates():
                         send_telegram_message("\n".join(lines), chat_id=from_chat_id)
 
                     # /panel Komutu
-                    elif text.startswith("/panel"):
+                    elif cmd.startswith("/panel"):
                         if PUBLIC_URL:
                             markup = {"inline_keyboard": [[{"text": "📊 Paneli Aç", "url": PUBLIC_URL}]]}
                             send_telegram_message("Aşağıdaki butona tıklayarak web panele giriş yapabilirsiniz:", chat_id=from_chat_id, reply_markup=markup)
