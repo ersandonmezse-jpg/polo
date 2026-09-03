@@ -41,6 +41,7 @@ def get_settings() -> dict:
                 "saha_group_id": "",
                 "saha_group_name": "Saha Grubu",
                 "sahaci_users": [],  # ['@ahmet', '@mehmet']
+                "saha_rate": 15.0,    # %15 varsayılan hakediş oranı
             }
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(default_settings, f, ensure_ascii=False, indent=2)
@@ -48,15 +49,24 @@ def get_settings() -> dict:
 
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if "saha_rate" not in data:
+                    data["saha_rate"] = 15.0
+                return data
         except Exception:
-            return {"saha_group_id": "", "saha_group_name": "Saha Grubu", "sahaci_users": []}
+            return {"saha_group_id": "", "saha_group_name": "Saha Grubu", "sahaci_users": [], "saha_rate": 15.0}
 
 
 def save_settings(settings: dict):
     with STORE_LOCK:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+def set_saha_rate(rate: float):
+    st = get_settings()
+    st["saha_rate"] = float(rate)
+    save_settings(st)
 
 
 def set_saha_group(chat_id: str, name: str = "Saha Grubu"):
