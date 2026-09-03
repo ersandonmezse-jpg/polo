@@ -2,6 +2,8 @@
 Veri ve Durum Yönetimi
 ======================
 - Google Sheets linklerinin eklenmesi, silinmesi, aktif/pasif yapılması
+- Grup Yönetimi (Aktarılacak hedef gruplar)
+- Kayıt durumları (Olumlu, Olumsuz, Kredi Düştü, Cevapsız)
 - Gönderilen Telegram mesaj ID'lerinin kaydı ve silinmesi
 - Panelden silinen kayıtların takibi
 - PIN brute-force koruması (Rate Limit)
@@ -25,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Dosya yolları
 SHEETS_FILE = "sheets_config.json"
+GROUPS_FILE = "groups_config.json"
 STATE_FILE = "sheets_state.json"
 STORE_LOCK = threading.Lock()
 
@@ -34,7 +37,6 @@ STORE_LOCK = threading.Lock()
 def extract_sheet_id(url_or_id: str) -> str:
     """Google Sheets URL'sinden veya direkt ID'den temiz sheet ID'sini çıkarır."""
     text = (url_or_id or "").strip()
-    # Eğer doğrudan ID verilmişse (yaklaşık 44 karakter)
     if re.match(r"^[a-zA-Z0-9-_]{20,}$", text):
         return text
 
@@ -48,7 +50,6 @@ def extract_sheet_id(url_or_id: str) -> str:
 # ── Google Sheets Yapılandırma Yönetimi ──────────────────────────────────────
 
 def get_sheets() -> list[dict]:
-    """Kayıtlı sheet listesini döndürür."""
     with STORE_LOCK:
         if not os.path.exists(SHEETS_FILE):
             initial = []
@@ -85,7 +86,6 @@ def save_sheets_unlocked(sheets: list[dict]):
 
 
 def add_sheet(name: str, url: str) -> tuple[bool, str]:
-    """Yeni Google Sheet ekler."""
     try:
         sheet_id = extract_sheet_id(url)
     except ValueError as e:
@@ -104,7 +104,6 @@ def add_sheet(name: str, url: str) -> tuple[bool, str]:
             except Exception:
                 sheets = []
 
-        # Zaten var mı kontrol et
         for s in sheets:
             if s.get("id") == sheet_id:
                 return False, "Bu Google Sheets linki zaten listede ekli!"
@@ -125,7 +124,6 @@ def add_sheet(name: str, url: str) -> tuple[bool, str]:
 
 
 def delete_sheet(sheet_id: str) -> bool:
-    """Sheet'i sistemden kaldırır."""
     with STORE_LOCK:
         if not os.path.exists(SHEETS_FILE):
             return False
@@ -141,7 +139,6 @@ def delete_sheet(sheet_id: str) -> bool:
 
 
 def toggle_sheet_active(sheet_id: str) -> bool:
-    """Sheet'in aktif/pasif durumunu değiştirir."""
     with STORE_LOCK:
         if not os.path.exists(SHEETS_FILE):
             return False
@@ -160,7 +157,6 @@ def toggle_sheet_active(sheet_id: str) -> bool:
 
 
 def update_sheet_meta(sheet_id: str, count: int, status: str = "Aktif"):
-    """Sheet'in son durum ve kayıt sayısını günceller."""
     with STORE_LOCK:
         if not os.path.exists(SHEETS_FILE):
             return
@@ -178,7 +174,76 @@ def update_sheet_meta(sheet_id: str, count: int, status: str = "Aktif"):
             pass
 
 
-# ── State & Kayıt & Mesaj Yönetimi ──────────────────────────────────────────
+# ── Hedef Grup Yönetimi ─────────────────────────────────────────────────────
+
+def get_groups() -> list[dict]:
+    """Aktarılacak kayıtlı hedef grupları döndürür."""
+    with STORE_LOCK:
+        if not os.path.exists(GROUPS_FILE):
+            # Varsayılan ana grubu ekle
+            initial = []
+            if TELEGRAM_CHAT_ID:
+                initial.append({
+                    "id": str(TELEGRAM_CHAT_ID),
+                    "name": "Ana Grup",
+                })
+            with open(GROUPS_FILE, "w", encoding="utf-8") as f:
+                json.dump(initial, f, ensure_ascii=False, indent=2)
+            return initial
+
+        try:
+            with open(GROUPS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+
+def add_group(name: str, chat_id: str) -> tuple[bool, str]:
+    """Yeni hedef grup ekler."""
+    c_id = str(chat_id or "").strip()
+    g_name = (name or "").strip() or f"Grup ({c_id})"
+
+    if not c_id:
+        return False, "Geçersiz Chat ID!"
+
+    with STORE_LOCK:
+        groups = []
+        if os.path.exists(GROUPS_FILE):
+            try:
+                with open(GROUPS_FILE, "r", encoding="utf-8") as f:
+                    groups = json.load(f)
+            except Exception:
+                groups = []
+
+        for g in groups:
+            if str(g.get("id")) == c_id:
+                return False, "Bu grup zaten kayıtlı!"
+
+        groups.append({"id": c_id, "name": g_name})
+        with open(GROUPS_FILE, "w", encoding="utf-8") as f:
+            json.dump(groups, f, ensure_ascii=False, indent=2)
+        return True, f"'{g_name}' başarıyla eklendi."
+
+
+def delete_group(chat_id: str) -> bool:
+    """Grubu siler."""
+    c_id = str(chat_id).strip()
+    with STORE_LOCK:
+        if not os.path.exists(GROUPS_FILE):
+            return False
+        try:
+            with open(GROUPS_FILE, "r", encoding="utf-8") as f:
+                groups = json.load(f)
+            groups = [g for g in groups if str(g.get("id")) != c_id]
+            with open(GROUPS_FILE, "w", encoding="utf-8") as f:
+                json.dump(groups, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception:
+            return False
+
+
+# ── State & Kayıt & Durum Yönetimi ──────────────────────────────────────────
 
 def load_state() -> dict:
     with STORE_LOCK:
@@ -203,17 +268,37 @@ def get_last_sent(sheet_id: str) -> int:
 def record_message_sent(sheet_id: str, row_num: int, message_id: int):
     state = load_state()
     if sheet_id not in state:
-        state[sheet_id] = {"last_sent": 0, "messages": {}, "deleted": []}
+        state[sheet_id] = {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []}
 
     sheet_st = state[sheet_id]
     if "messages" not in sheet_st:
         sheet_st["messages"] = {}
+    if "statuses" not in sheet_st:
+        sheet_st["statuses"] = {}
     if "deleted" not in sheet_st:
         sheet_st["deleted"] = []
 
     sheet_st["last_sent"] = max(sheet_st.get("last_sent", 0), row_num + 1)
     sheet_st["messages"][str(row_num)] = message_id
     save_state(state)
+
+
+def set_record_status(sheet_id: str, row_num: int, status: str, user_name: str = ""):
+    """Kaydın durumunu (Olumlu, Olumsuz, Kredi Düştü, vb.) günceller."""
+    state = load_state()
+    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []})
+    statuses = sheet_st.setdefault("statuses", {})
+    statuses[str(row_num)] = {
+        "status": status,
+        "user": user_name,
+        "time": time.strftime("%H:%M")
+    }
+    save_state(state)
+
+
+def get_record_status(sheet_id: str, row_num: int) -> dict:
+    state = load_state()
+    return state.get(sheet_id, {}).get("statuses", {}).get(str(row_num), {})
 
 
 def is_record_deleted(sheet_id: str, row_num: int) -> bool:
@@ -224,7 +309,7 @@ def is_record_deleted(sheet_id: str, row_num: int) -> bool:
 
 def delete_record(sheet_id: str, row_num: int) -> tuple[bool, str]:
     state = load_state()
-    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "deleted": []})
+    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []})
     deleted_list = sheet_st.setdefault("deleted", [])
 
     row_int = int(row_num)

@@ -35,6 +35,10 @@ from data_store import (
     check_rate_limit,
     record_failed_attempt,
     record_successful_login,
+    get_groups,
+    add_group,
+    delete_group,
+    get_record_status,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -881,6 +885,7 @@ DASHBOARD_HTML = """
             </div>
             <div class="top-actions">
                 <button class="icon-btn primary" onclick="openLinksModal()" title="Link Yönetimi">🔗 Linkler</button>
+                <button class="icon-btn" onclick="openGroupsModal()" title="Hedef Gruplar">👥 Gruplar</button>
                 <button class="icon-btn" onclick="location.reload()" title="Yenile">🔄</button>
                 <a href="/logout" class="icon-btn" title="Çıkış">🚪</a>
             </div>
@@ -918,9 +923,16 @@ DASHBOARD_HTML = """
             <div class="cards-list" id="list-{{ sheet.id }}">
                 {% if sheet.rows %}
                     {% for row in sheet.rows|reverse %}
-                    <div class="data-card" id="card-{{ sheet.id }}-{{ row.num }}" data-search="{{ row.tc_no }} {{ row.phone }} {{ row.calisma_durumu }}">
+                    <div class="data-card" id="card-{{ sheet.id }}-{{ row.num }}" data-search="{{ row.tc_no }} {{ row.phone }} {{ row.calisma_durumu }} {{ row.lead_status }}">
                         <div class="card-top">
-                            <span class="card-id-tag">#{{ row.num }}</span>
+                            <div style="display:flex; align-items:center; gap:6px;">
+                                <span class="card-id-tag">#{{ row.num }}</span>
+                                {% if row.lead_status %}
+                                <span style="font-size:10px; font-weight:700; background:rgba(34,197,94,0.15); color:#4ade80; border:1px solid rgba(34,197,94,0.3); padding:1px 6px; border-radius:6px;" title="{{ row.lead_user }} - {{ row.lead_time }}">
+                                    {{ row.lead_status }}
+                                </span>
+                                {% endif %}
+                            </div>
                             <span class="card-date">🕒 {{ row.created_time }}</span>
                         </div>
                         <div class="card-body-grid">
@@ -1006,6 +1018,44 @@ DASHBOARD_HTML = """
                             </button>
                             <button class="sm-btn del" onclick="removeSheet('{{ s.id }}', '{{ s.name }}')">
                                 🗑️ Sil
+                            </button>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Groups Management Modal -->
+    <div class="links-modal" id="groupsModal">
+        <div class="modal-content">
+            <div class="modal-head">
+                <h2>👥 Hedef Grup Yönetimi</h2>
+                <button class="close-btn" onclick="closeGroupsModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="add-sheet-box">
+                    <h3>+ Yeni Hedef Grup Ekle</h3>
+                    <input type="text" id="newGroupName" class="form-input" placeholder="Grup Adı (Örn: Satış Ekibi 1)">
+                    <input type="text" id="newGroupChatId" class="form-input" placeholder="Chat ID (Örn: -1001234567890)">
+                    <button type="button" class="submit-btn" onclick="submitAddGroup()">+ Grubu Kaydet</button>
+                    <div style="font-size:11px; color:var(--hint-color); margin-top:2px;">
+                        💡 İpucu: Bota gruptayken <code>/grup_ekle Grup Adı</code> yazarak da grubu otomatik ekleyebilirsiniz!
+                    </div>
+                </div>
+
+                <div style="font-size:12px; font-weight:700; color:var(--hint-color); text-transform:uppercase;">Aktarım Yapılabilecek Gruplar</div>
+                <div id="groupsListContainer" style="display:flex; flex-direction:column; gap:8px;">
+                    {% for g in all_groups %}
+                    <div class="sheet-item" id="group-item-{{ g.id }}">
+                        <div class="sheet-item-top">
+                            <span class="sheet-name">👥 {{ g.name }}</span>
+                            <span style="font-family:monospace; font-size:11px; color:#a5b4fc;">{{ g.id }}</span>
+                        </div>
+                        <div class="sheet-actions">
+                            <button class="sm-btn del" onclick="removeGroup('{{ g.id }}', '{{ g.name }}')">
+                                🗑️ Grubu Kaldır
                             </button>
                         </div>
                     </div>
@@ -1196,6 +1246,63 @@ DASHBOARD_HTML = """
                 }
             });
         }
+
+        // ── Grup Yönetimi Modalı ──
+
+        function openGroupsModal() {
+            document.getElementById("groupsModal").classList.add("open");
+        }
+        function closeGroupsModal() {
+            document.getElementById("groupsModal").classList.remove("open");
+        }
+
+        function submitAddGroup() {
+            const name = document.getElementById("newGroupName").value.trim();
+            const chatId = document.getElementById("newGroupChatId").value.trim();
+
+            if (!chatId) {
+                alert("Lütfen geçerli bir Grup Chat ID girin.");
+                return;
+            }
+
+            fetch("/api/add-group", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: name, chat_id: chatId })
+            })
+            .then(async res => {
+                const data = await res.json().catch(() => ({ ok: false, error: "Sunucu hatası" }));
+                if (res.ok && data.ok) {
+                    showToast("Grup eklendi! Yenileniyor...");
+                    triggerHaptic("success");
+                    setTimeout(() => location.reload(), 800);
+                } else {
+                    alert("Hata: " + (data.error || data.message || "Grup eklenemedi."));
+                }
+            })
+            .catch(err => alert("Bağlantı hatası: " + err));
+        }
+
+        function removeGroup(chatId, name) {
+            if (!confirm("'" + name + "' grubunu aktarım listesinden kaldırmak istediğinize emin misiniz?")) {
+                return;
+            }
+
+            fetch("/api/delete-group", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: chatId })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.ok) {
+                    showToast("Grup kaldırıldı!");
+                    setTimeout(() => location.reload(), 600);
+                } else {
+                    alert("Hata: " + data.error);
+                }
+            });
+        }
     </script>
 </body>
 </html>
@@ -1296,6 +1403,7 @@ def dashboard():
                         continue
 
                     created_raw = row.get(col_mapping.get("created_time", ""), "")
+                    st_info = get_record_status(sheet_id, i)
                     sheet_info["rows"].append({
                         "num": i,
                         "created_time": convert_to_turkey_time(created_raw),
@@ -1303,6 +1411,9 @@ def dashboard():
                         "tc_no": row.get(col_mapping.get("t.c_numaranız", ""), "—"),
                         "kart_limit": row.get(col_mapping.get("kullanılabilir_kart_limitiniz", ""), "—"),
                         "phone": row.get(col_mapping.get("phone_number", ""), "—"),
+                        "lead_status": st_info.get("status", ""),
+                        "lead_user": st_info.get("user", ""),
+                        "lead_time": st_info.get("time", ""),
                     })
 
                 sheet_info["count"] = len(raw_rows)
@@ -1315,6 +1426,8 @@ def dashboard():
 
         sheets_data.append(sheet_info)
 
+    all_groups = get_groups()
+
     return render_template_string(
         DASHBOARD_HTML,
         sheets=sheets_data,
@@ -1322,6 +1435,7 @@ def dashboard():
         total_sheets=len(all_sheets_raw),
         active_sheets_count=active_count,
         total_rows=total_rows,
+        all_groups=all_groups,
     )
 
 
@@ -1375,6 +1489,28 @@ def api_delete_record():
     except Exception as e:
         logger.error(f"Kayıt silme hatası: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/add-group", methods=["POST"])
+@login_required
+def api_add_group():
+    data = request.get_json() or {}
+    name = data.get("name", "")
+    chat_id = data.get("chat_id", "")
+    success, msg = add_group(name, chat_id)
+    if success:
+        return jsonify({"ok": True, "message": msg})
+    return jsonify({"ok": False, "error": msg}), 400
+
+
+@app.route("/api/delete-group", methods=["POST"])
+@login_required
+def api_delete_group():
+    data = request.get_json() or {}
+    chat_id = data.get("chat_id", "")
+    if delete_group(chat_id):
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Grup silinemedi."}), 400
 
 
 if __name__ == "__main__":
