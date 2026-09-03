@@ -1146,17 +1146,17 @@ DASHBOARD_HTML = """
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ name: name, url: url })
             })
-            .then(res => res.json())
-            .then(data => {
-                if (data.ok) {
+            .then(async res => {
+                const data = await res.json().catch(() => ({ ok: false, error: "Sunucu hatası veya geçersiz yanıt." }));
+                if (res.ok && data.ok) {
                     showToast("Sheet eklendi! Yenileniyor...");
                     triggerHaptic("success");
                     setTimeout(() => location.reload(), 800);
                 } else {
-                    alert("Hata: " + data.error);
+                    alert("Uyarı: " + (data.error || data.message || "Link eklenemedi."));
                 }
             })
-            .catch(err => alert("İstek hatası: " + err));
+            .catch(err => alert("Bağlantı hatası: " + err));
         }
 
         function toggleSheet(sheetId) {

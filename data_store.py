@@ -31,12 +31,18 @@ STORE_LOCK = threading.Lock()
 
 # ── URL ve Sheet ID Yardımcıları ──────────────────────────────────────────
 
-def extract_sheet_id(url: str) -> str:
-    """Google Sheets URL'sinden ID'yi çıkarır."""
-    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
-    if not match:
-        raise ValueError("Geçersiz Google Sheets linki. Lütfen tam linki yapıştırın.")
-    return match.group(1)
+def extract_sheet_id(url_or_id: str) -> str:
+    """Google Sheets URL'sinden veya direkt ID'den temiz sheet ID'sini çıkarır."""
+    text = (url_or_id or "").strip()
+    # Eğer doğrudan ID verilmişse (yaklaşık 44 karakter)
+    if re.match(r"^[a-zA-Z0-9-_]{20,}$", text):
+        return text
+
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", text)
+    if match:
+        return match.group(1)
+
+    raise ValueError("Geçersiz Google Sheets linki. Lütfen geçerli bir Google E-Tablo linki girin.")
 
 
 # ── Google Sheets Yapılandırma Yönetimi ──────────────────────────────────────
@@ -45,7 +51,6 @@ def get_sheets() -> list[dict]:
     """Kayıtlı sheet listesini döndürür."""
     with STORE_LOCK:
         if not os.path.exists(SHEETS_FILE):
-            # Varsayılan sheets'i kaydet
             initial = []
             for s in DEFAULT_SHEETS:
                 try:
@@ -66,7 +71,10 @@ def get_sheets() -> list[dict]:
 
         try:
             with open(SHEETS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+                return []
         except Exception:
             return []
 
@@ -83,24 +91,29 @@ def add_sheet(name: str, url: str) -> tuple[bool, str]:
     except ValueError as e:
         return False, str(e)
 
+    clean_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit?usp=sharing"
+
     with STORE_LOCK:
         sheets = []
         if os.path.exists(SHEETS_FILE):
             try:
                 with open(SHEETS_FILE, "r", encoding="utf-8") as f:
-                    sheets = json.load(f)
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        sheets = data
             except Exception:
                 sheets = []
 
         # Zaten var mı kontrol et
         for s in sheets:
             if s.get("id") == sheet_id:
-                return False, "Bu Google Sheets zaten ekli!"
+                return False, "Bu Google Sheets linki zaten listede ekli!"
 
+        sheet_name = (name or "").strip() or f"Form {len(sheets) + 1}"
         new_entry = {
             "id": sheet_id,
-            "name": name.strip() or f"Form {len(sheets) + 1}",
-            "url": url.strip(),
+            "name": sheet_name,
+            "url": clean_url,
             "active": True,
             "status": "Aktif",
             "last_check": "—",
@@ -108,7 +121,7 @@ def add_sheet(name: str, url: str) -> tuple[bool, str]:
         }
         sheets.append(new_entry)
         save_sheets_unlocked(sheets)
-        return True, "Google Sheet başarıyla eklendi."
+        return True, f"'{sheet_name}' başarıyla eklendi."
 
 
 def delete_sheet(sheet_id: str) -> bool:
@@ -168,7 +181,6 @@ def update_sheet_meta(sheet_id: str, count: int, status: str = "Aktif"):
 # ── State & Kayıt & Mesaj Yönetimi ──────────────────────────────────────────
 
 def load_state() -> dict:
-    """State dosyasını okur."""
     with STORE_LOCK:
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
@@ -178,7 +190,6 @@ def load_state() -> dict:
 
 
 def save_state(state: dict):
-    """State dosyasını yazar."""
     with STORE_LOCK:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
@@ -190,7 +201,6 @@ def get_last_sent(sheet_id: str) -> int:
 
 
 def record_message_sent(sheet_id: str, row_num: int, message_id: int):
-    """Gönderilen kaydı ve Telegram message_id'sini kaydeder."""
     state = load_state()
     if sheet_id not in state:
         state[sheet_id] = {"last_sent": 0, "messages": {}, "deleted": []}
@@ -207,16 +217,12 @@ def record_message_sent(sheet_id: str, row_num: int, message_id: int):
 
 
 def is_record_deleted(sheet_id: str, row_num: int) -> bool:
-    """Bir kaydın panelden silinip silinmediğini kontrol eder."""
     state = load_state()
     deleted_list = state.get(sheet_id, {}).get("deleted", [])
     return int(row_num) in deleted_list
 
 
 def delete_record(sheet_id: str, row_num: int) -> tuple[bool, str]:
-    """
-    Kaydı panelden siler ve Telegram grubundan da siler.
-    """
     state = load_state()
     sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "deleted": []})
     deleted_list = sheet_st.setdefault("deleted", [])
@@ -228,8 +234,7 @@ def delete_record(sheet_id: str, row_num: int) -> tuple[bool, str]:
     msg_id = sheet_st.get("messages", {}).get(str(row_num))
     tg_deleted = False
 
-    # Telegram'dan mesajı sil
-    if msg_id:
+    if msg_id and TELEGRAM_BOT_TOKEN:
         try:
             api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
             resp = requests.post(api_url, json={
@@ -248,7 +253,6 @@ def delete_record(sheet_id: str, row_num: int) -> tuple[bool, str]:
 
 # ── Brute-Force Rate Limiting (PIN Girişi) ───────────────────────────────────
 
-# {ip: {"attempts": int, "lock_until": float}}
 RATE_LIMIT_CACHE = {}
 RATE_LOCK = threading.Lock()
 MAX_ATTEMPTS = 5
@@ -256,23 +260,17 @@ LOCKOUT_SECONDS = 600  # 10 dakika
 
 
 def check_rate_limit(ip: str) -> tuple[bool, int, int]:
-    """
-    Kullanıcının PIN deneme izni olup olmadığını kontrol eder.
-    Döner: (allowed, remaining_attempts, wait_seconds)
-    """
     now = time.time()
     with RATE_LOCK:
         data = RATE_LIMIT_CACHE.get(ip)
         if not data:
             return True, MAX_ATTEMPTS, 0
 
-        # Kilit süresi doldu mu?
         lock_until = data.get("lock_until", 0)
         if lock_until > now:
             wait_sec = int(lock_until - now)
             return False, 0, wait_sec
 
-        # Kilit süresi geçtiyse sıfırla
         if lock_until != 0 and lock_until <= now:
             RATE_LIMIT_CACHE.pop(ip, None)
             return True, MAX_ATTEMPTS, 0
@@ -283,10 +281,6 @@ def check_rate_limit(ip: str) -> tuple[bool, int, int]:
 
 
 def record_failed_attempt(ip: str) -> tuple[int, int]:
-    """
-    Hatalı PIN denemesini kaydeder.
-    Döner: (remaining_attempts, wait_seconds)
-    """
     now = time.time()
     with RATE_LOCK:
         data = RATE_LIMIT_CACHE.setdefault(ip, {"attempts": 0, "lock_until": 0})
@@ -301,6 +295,5 @@ def record_failed_attempt(ip: str) -> tuple[int, int]:
 
 
 def record_successful_login(ip: str):
-    """Başarılı girişte IP sayacını temizler."""
     with RATE_LOCK:
         RATE_LIMIT_CACHE.pop(ip, None)
