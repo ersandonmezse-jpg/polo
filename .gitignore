@@ -30,5 +30,7 @@ sheets_state.json
 sheets_config.json
 clients_db.json
 groups_config.json
+settings_config.json
+activity_log.json
 data_events.json
 *.log
