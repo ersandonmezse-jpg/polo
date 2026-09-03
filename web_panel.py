@@ -1045,6 +1045,12 @@ DASHBOARD_HTML = """
                                 <span class="f-label">Telefon Numarası</span>
                                 <span class="f-val">{{ row.phone }}</span>
                             </div>
+                            {% if row.lead_note %}
+                            <div class="field-box full-width" style="background:rgba(234,179,8,0.08); border:1px solid rgba(234,179,8,0.2); border-radius:8px; padding:6px 8px;">
+                                <span class="f-label" style="color:#facc15;">📝 Alınan Not</span>
+                                <span class="f-val" style="color:#fef08a; white-space:normal;">{{ row.lead_note }}</span>
+                            </div>
+                            {% endif %}
                         </div>
 
                         <!-- Card Action Buttons -->
@@ -1533,6 +1539,7 @@ def dashboard():
                         "kart_limit": row.get(col_mapping.get("kullanılabilir_kart_limitiniz", ""), "—"),
                         "phone": row.get(col_mapping.get("phone_number", ""), "—"),
                         "lead_status": st_info.get("status", ""),
+                        "lead_note": st_info.get("note", ""),
                         "lead_user": st_info.get("user", ""),
                         "lead_time": st_info.get("time", ""),
                         "fwd_group": fwd_group,

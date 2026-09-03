@@ -933,7 +933,8 @@ def listen_telegram_updates():
                         orig_text = pending["original_text"]
 
                         note_str = f"📝 Not: {text}"
-                        set_record_status(sheet_id, row_num, note_str, user_tag)
+                        set_record_status(sheet_id, row_num, note_str, user_tag, note=text)
+                        log_activity_event("note", sheet_id, row_num, user_name=user_tag, extra=text)
 
                         base_text = orig_text.split("\n📝 Not:")[0].split("\n↪️")[0]
                         now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
