@@ -1216,20 +1216,23 @@ def listen_telegram_updates():
                         match = re.search(r"https?://docs\.google\.com/spreadsheets/d/[a-zA-Z0-9-_]+[^\s]*", target_url)
                         if match:
                             clean_url = match.group(0)
-                            sheet_name = f"Form {len(get_sheets()) + 1}"
-                            success, msg_resp = add_sheet(sheet_name, clean_url)
+                            success, msg_resp = add_sheet("", clean_url)
 
                             if success:
+                                # Yeni eklenen sheet'in adını al
+                                s_id = extract_sheet_id(clean_url)
+                                added_sheet = next((s for s in get_sheets() if s.get("id") == s_id), None)
+                                sheet_name = added_sheet.get("name") if added_sheet else "E-Tablo"
+
                                 # Hemen yeni eklenen sheet'i tara ve gönder!
                                 try:
-                                    s_id = extract_sheet_id(clean_url)
                                     threading.Thread(target=check_and_send_sheet, args=({"name": sheet_name, "url": clean_url, "id": s_id},), daemon=True).start()
                                 except Exception:
                                     pass
 
                                 reply_msg = (
                                     f"✅ <b>Google Sheets Başarıyla Eklendi!</b>\n\n"
-                                    f"📝 <b>İsim:</b> {sheet_name}\n"
+                                    f"📝 <b>Tablo Adı:</b> <b>{html.escape(sheet_name)}</b>\n"
                                     f"🔗 <b>Link:</b> {clean_url}\n\n"
                                     f"Kayıtlar kontrol ediliyor ve etkileşim butonlarıyla gönderiliyor..."
                                 )

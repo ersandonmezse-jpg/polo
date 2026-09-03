@@ -339,6 +339,24 @@ def extract_sheet_id(url_or_id: str) -> str:
     raise ValueError("Geçersiz Google Sheets linki. Lütfen geçerli bir Google E-Tablo linki girin.")
 
 
+def fetch_google_sheet_title(sheet_id: str) -> str:
+    """Google Sheets web sayfasından tablonun gerçek başlığını (Örn: 'zigiligo') çeker."""
+    try:
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit?usp=sharing"
+        res = requests.get(url, timeout=7)
+        if res.status_code == 200:
+            match = re.search(r"<title>(.*?)</title>", res.text, re.IGNORECASE)
+            if match:
+                raw_title = match.group(1).strip()
+                # ' - Google E-Tablolar' veya ' - Google Sheets' ekini temizle
+                clean_title = re.sub(r"\s*-\s*Google\s*(Sheets|E-Tablolar|Drive)?.*$", "", raw_title, flags=re.IGNORECASE).strip()
+                if clean_title:
+                    return clean_title
+    except Exception as e:
+        logger.debug(f"Sheet başlığı çekilemedi ({sheet_id}): {e}")
+    return ""
+
+
 # ── Google Sheets Yapılandırma Yönetimi ──────────────────────────────────────
 
 def get_sheets() -> list[dict]:
@@ -358,8 +376,7 @@ def get_sheets() -> list[dict]:
 
 
 def save_sheets_unlocked(sheets: list[dict]):
-    with open(SHEETS_FILE, "w", encoding="utf-8") as f:
-        json.dump(sheets, f, ensure_ascii=False, indent=2)
+    atomic_save_json(SHEETS_FILE, sheets)
 
 
 def add_sheet(name: str, url: str) -> tuple[bool, str]:
@@ -369,6 +386,9 @@ def add_sheet(name: str, url: str) -> tuple[bool, str]:
         return False, str(e)
 
     clean_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit?usp=sharing"
+
+    # Otomatik gerçek tablo adını çek (Eğer özel isim girilmediyse veya varsayılan 'Form' ise)
+    auto_title = fetch_google_sheet_title(sheet_id)
 
     with STORE_LOCK:
         sheets = []
@@ -383,9 +403,20 @@ def add_sheet(name: str, url: str) -> tuple[bool, str]:
 
         for s in sheets:
             if s.get("id") == sheet_id:
-                return False, "Bu Google Sheets linki zaten listede ekli!"
+                # İsim güncellenmek isteniyorsa güncelle
+                if auto_title and (s.get("name", "").startswith("Form ") or not s.get("name")):
+                    s["name"] = auto_title
+                    save_sheets_unlocked(sheets)
+                    return True, f"Tablo adı '{auto_title}' olarak güncellendi."
+                return False, f"Bu Google Sheets zaten ekli! ({s.get('name')})"
 
-        sheet_name = (name or "").strip() or f"Form {len(sheets) + 1}"
+        # Kullanıcı özel isim girmediyse ya da 'Form' kaldıysa otomatik tablo başlığını kullan
+        user_name = (name or "").strip()
+        if not user_name or user_name.lower().startswith("form"):
+            sheet_name = auto_title or user_name or f"Form {len(sheets) + 1}"
+        else:
+            sheet_name = user_name
+
         new_entry = {
             "id": sheet_id,
             "name": sheet_name,
