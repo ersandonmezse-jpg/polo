@@ -353,6 +353,8 @@ def listen_telegram_updates():
                             status_label = STATUS_MAP.get(st_key, st_key)
 
                             set_record_status(sheet_id, row_num, status_label, user_tag)
+                            # KPI aktivitesine işle
+                            log_activity_event(st_key, sheet_id, row_num, user_name=user_tag)
 
                             base_text = original_text.split("\n📌 Durum:")[0].split("\n📝 Not:")[0].split("\n↪️")[0]
                             now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
@@ -1302,9 +1304,12 @@ def check_and_send_sheet(sheet_config: dict):
         message = format_message(entry_number, row, col_mapping, sheet_name)
         keyboard = build_record_keyboard(sheet_id, entry_number)
 
+        phone = row.get(col_mapping.get("phone_number", ""), "")
+        tc_no = row.get(col_mapping.get("t.c_numaranız", ""), "")
+
         success, msg_id = send_telegram_message(message, reply_markup=keyboard)
         if success:
-            record_message_sent(sheet_id, entry_number, msg_id or 0)
+            record_message_sent(sheet_id, entry_number, msg_id or 0, phone=phone, tc_no=tc_no)
             time.sleep(2)
         else:
             logger.error(f"[{sheet_name}] Satır #{entry_number} gönderilemedi.")

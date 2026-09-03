@@ -15,7 +15,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 GOOGLE_SHEETS = []
 
 # ── Kontrol Aralığı ──────────────────────────────────────────────────────────
-CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "1200"))  # 20 dakika
+CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "45"))  # 45 saniyede bir otomatik tarar (Canlı veri akışı)
 
 # ── Web Panel ────────────────────────────────────────────────────────────────
 ADMIN_PIN = os.environ.get("ADMIN_PIN", "1453")

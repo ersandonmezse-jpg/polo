@@ -45,6 +45,22 @@ ACTIVITY_LOG_FILE = os.path.join(DATA_DIR, "activity_log.json")
 STORE_LOCK = threading.Lock()
 
 
+def atomic_save_json(filepath: str, data: dict | list):
+    """Veriyi önce geçici bir dosyaya yazar, ardından atomik olarak asıl dosyayla değiştirir (Race condition ve bozulmaları önler)."""
+    tmp_path = f"{filepath}.tmp_{os.getpid()}_{time.time()}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, filepath)
+    except Exception as e:
+        logger.error(f"Atomic JSON kaydetme hatası ({filepath}): {e}")
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
 # ── Telefon & Müşteri Geçmiş Veritabanı (CRM & Mükerrer Başvuru) ──────────────
 
 def normalize_phone(phone_raw: str) -> str:
@@ -72,8 +88,7 @@ def load_clients_db() -> dict:
 
 def save_clients_db(db: dict):
     with STORE_LOCK:
-        with open(CLIENTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(db, f, ensure_ascii=False, indent=2)
+        atomic_save_json(CLIENTS_FILE, db)
 
 
 def save_client_profile(phone: str, tc_no: str, extra_data: dict, status: str = "", note: str = ""):
@@ -186,11 +201,7 @@ def log_activity_event(event_type: str, sheet_id: str, row_num: int, group_name:
         if len(events) > 10000:
             events = events[-10000:]
 
-        try:
-            with open(ACTIVITY_LOG_FILE, "w", encoding="utf-8") as f:
-                json.dump(events, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        atomic_save_json(ACTIVITY_LOG_FILE, events)
 
 
 def get_dashboard_metrics(start_date_str: str = None, end_date_str: str = None) -> dict:
@@ -543,35 +554,50 @@ def get_last_sent(sheet_id: str) -> int:
     return state.get(sheet_id, {}).get("last_sent", 0)
 
 
-def record_message_sent(sheet_id: str, row_num: int, message_id: int):
+def record_message_sent(sheet_id: str, row_num: int, message_id: int, phone: str = "", tc_no: str = ""):
     state = load_state()
     if sheet_id not in state:
-        state[sheet_id] = {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []}
+        state[sheet_id] = {"last_sent": 0, "messages": {}, "statuses": {}, "clients": {}, "deleted": []}
 
     sheet_st = state[sheet_id]
     if "messages" not in sheet_st:
         sheet_st["messages"] = {}
     if "statuses" not in sheet_st:
         sheet_st["statuses"] = {}
+    if "clients" not in sheet_st:
+        sheet_st["clients"] = {}
     if "deleted" not in sheet_st:
         sheet_st["deleted"] = []
 
     sheet_st["last_sent"] = max(sheet_st.get("last_sent", 0), row_num + 1)
     sheet_st["messages"][str(row_num)] = message_id
+    if phone or tc_no:
+        sheet_st["clients"][str(row_num)] = {"phone": phone, "tc_no": tc_no}
     save_state(state)
 
 
-def set_record_status(sheet_id: str, row_num: int, status: str, user_name: str = ""):
-    """Kaydın durumunu (Not Eklendi, Olumsuz, Kredi Düştü, vb.) günceller."""
+def set_record_status(sheet_id: str, row_num: int, status: str, user_name: str = "", note: str = ""):
+    """Kaydın durumunu günceller ve müşterinin kalıcı CRM profiline de yansıtır."""
     state = load_state()
-    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "forwarded": {}, "deleted": []})
+    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "clients": {}, "forwarded": {}, "deleted": []})
     statuses = sheet_st.setdefault("statuses", {})
     statuses[str(row_num)] = {
         "status": status,
         "user": user_name,
+        "note": note,
         "time": time.strftime("%H:%M")
     }
     save_state(state)
+
+    # MÜŞTERİ KALICI CRM PROFİLİNİ ANINDA GÜNCELLE
+    try:
+        client_info = sheet_st.get("clients", {}).get(str(row_num), {})
+        phone = client_info.get("phone", "")
+        tc_no = client_info.get("tc_no", "")
+        if phone or tc_no:
+            save_client_profile(phone, tc_no, extra_data={"sheet_id": sheet_id, "row_num": row_num}, status=status, note=note)
+    except Exception as e:
+        logger.error(f"CRM senkronizasyon hatası: {e}")
 
 
 def get_record_status(sheet_id: str, row_num: int) -> dict:
