@@ -130,9 +130,11 @@ def send_panel_link(web_app_url: str):
 
 
 def run_bot():
-    """Telegram bot'unu baslatir."""
-    from bot import main as bot_main
-    bot_main()
+    """Telegram bot'unun çalıştığından emin olur ve ana thread'i canlı tutar."""
+    from web_panel import ensure_bot_running
+    ensure_bot_running()
+    while True:
+        time.sleep(30)
 
 
 def main():

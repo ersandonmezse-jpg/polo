@@ -1753,11 +1753,18 @@ def listen_telegram_updates():
                             if not target_group:
                                 target_group = str(from_chat_id)
 
-                            send_telegram_message(
-                                f"🚀 <b>Aktarım Başlatıldı!</b>\n\n"
-                                f"Kayıtlı e-tablolardaki tüm veriler bu sohbete (<code>{target_group}</code>) etkileşim butonlarıyla aktarılıyor...",
-                                chat_id=from_chat_id
-                            )
+                            if TRANSFER_LOCK.locked():
+                                send_telegram_message(
+                                    f"⏳ <b>Aktarım Sıraya Alındı!</b>\n\n"
+                                    f"Şu anda devam eden bir aktarım işlemi var. Tamamlanır tamamlanmaz veriler bu sohbete (<code>{target_group}</code>) aktarılacaktır...",
+                                    chat_id=from_chat_id
+                                )
+                            else:
+                                send_telegram_message(
+                                    f"🚀 <b>Aktarım Başlatıldı!</b>\n\n"
+                                    f"Kayıtlı e-tablolardaki tüm veriler bu sohbete (<code>{target_group}</code>) etkileşim butonlarıyla aktarılıyor...",
+                                    chat_id=from_chat_id
+                                )
                             threading.Thread(
                                 target=run_sheets_transfer,
                                 args=(active_sheets, target_group, True),
@@ -1882,24 +1889,26 @@ def check_and_send_sheet(sheet_config: dict, force_resend: bool = False):
     for i, row in enumerate(new_rows):
         entry_number = start_idx + i
         display_num = entry_number + 1
+        try:
+            phone = extract_phone_from_row(row, col_mapping)
+            tc_no = row.get(col_mapping.get("t.c_numaranız", ""), "")
 
-        phone = extract_phone_from_row(row, col_mapping)
-        tc_no = row.get(col_mapping.get("t.c_numaranız", ""), "")
+            message = format_message(display_num, row, col_mapping, sheet_name)
+            keyboard = build_record_keyboard(sheet_id, entry_number)
 
-        message = format_message(display_num, row, col_mapping, sheet_name)
-        keyboard = build_record_keyboard(sheet_id, entry_number)
-
-        success, msg_id = send_telegram_message(message, chat_id=target_chat, reply_markup=keyboard)
-        if not success:
-            time.sleep(2)
             success, msg_id = send_telegram_message(message, chat_id=target_chat, reply_markup=keyboard)
+            if not success:
+                time.sleep(2)
+                success, msg_id = send_telegram_message(message, chat_id=target_chat, reply_markup=keyboard)
 
-        if success:
-            record_message_sent(sheet_id, entry_number, msg_id or 0, phone=phone, tc_no=tc_no, global_id=display_num)
-            sent_count += 1
-            time.sleep(1)
-        else:
-            logger.error(f"[{sheet_name}] Satır #{entry_number} {target_chat} sohbetine gönderilemedi.")
+            if success:
+                record_message_sent(sheet_id, entry_number, msg_id or 0, phone=phone, tc_no=tc_no, global_id=display_num)
+                sent_count += 1
+                time.sleep(1)
+            else:
+                logger.error(f"[{sheet_name}] Satır #{entry_number} {target_chat} sohbetine gönderilemedi.")
+        except Exception as e:
+            logger.error(f"[{sheet_name}] Satır #{entry_number} gönderim istisnası: {e}", exc_info=True)
 
     if sent_count > 0:
         logger.info(f"[{sheet_name}] {sent_count} adet kayıt {target_chat} sohbetine başarıyla aktarıldı.")
@@ -1932,13 +1941,11 @@ def main():
     logger.info(f"  Kontrol aralığı: {CHECK_INTERVAL} saniye ({CHECK_INTERVAL // 60} dakika)")
     logger.info("=" * 50)
 
-    listener_thread = threading.Thread(target=listen_telegram_updates, daemon=True)
+    listener_thread = threading.Thread(target=listen_telegram_updates, name="TelegramListenerThread", daemon=True)
     listener_thread.start()
 
-    try:
-        check_all_sheets()
-    except Exception as e:
-        logger.error(f"İlk kontrolde hata: {e}")
+    # İlk kontrolde thread'i veya ana döngüyü bloke etmemesi için asenkron çalıştır
+    threading.Thread(target=check_all_sheets, name="InitialSheetsCheckThread", daemon=True).start()
 
     while True:
         time.sleep(CHECK_INTERVAL)

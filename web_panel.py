@@ -13,6 +13,7 @@ import json
 import os
 import re
 import logging
+import threading
 from datetime import datetime
 from functools import wraps
 
@@ -2004,5 +2005,80 @@ def api_delete_group():
     return jsonify({"ok": False, "error": "Grup silinemedi."}), 400
 
 
+# ── Otomatik Arka Plan Bot Yöneticisi (Gunicorn & Standalone Uyumlu) ─────────
+_bot_lock_file = None
+_bot_started = False
+_bot_lock = threading.Lock()
+
+
+def ensure_bot_running():
+    """Gunicorn veya doğrudan web başlatmalarında Telegram Bot'un arka planda her zaman çalışmasını sağlar."""
+    global _bot_lock_file, _bot_started
+    if _bot_started:
+        return
+    with _bot_lock:
+        if _bot_started:
+            return
+
+        lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram_bot.lock")
+        try:
+            import fcntl
+            f = open(lock_path, "w")
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _bot_lock_file = f
+        except ImportError:
+            # Windows ortamı (lokal test)
+            pass
+        except (BlockingIOError, IOError):
+            logger.info("[Bot Singleton] Başka bir web/gunicorn worker süreci botu zaten çalıştırıyor.")
+            return
+        except Exception as e:
+            logger.warning(f"[Bot Singleton] Dosya kilidi uyarısı: {e}")
+
+        _bot_started = True
+
+    def _run_bot():
+        logger.info("🚀 Telegram Bot arka plan iş parçacığı başlatılıyor...")
+        try:
+            from config import PUBLIC_URL
+            if PUBLIC_URL:
+                try:
+                    from start import set_bot_menu_button, set_bot_commands
+                    set_bot_menu_button(PUBLIC_URL)
+                    set_bot_commands()
+                except Exception as e:
+                    logger.warning(f"Bot menü butonu/komutlar ayarlanamadı: {e}")
+            from bot import main as bot_main
+            bot_main()
+        except Exception as e:
+            logger.error(f"❌ Telegram Bot thread hatası: {e}", exc_info=True)
+
+    t = threading.Thread(target=_run_bot, name="TelegramBotWorker", daemon=True)
+    t.start()
+    logger.info("✅ Telegram Bot arka plan iş parçacığı (TelegramBotWorker) başarıyla başlatıldı.")
+
+
+@app.before_request
+def _check_bot_alive():
+    ensure_bot_running()
+
+
+@app.route("/api/bot-status", methods=["GET"])
+def api_bot_status():
+    threads = [t.name for t in threading.enumerate()]
+    return jsonify({
+        "ok": True,
+        "bot_started": _bot_started,
+        "pid": os.getpid(),
+        "threads": threads,
+        "time": datetime.now(TURKEY_TZ).strftime("%d/%m/%Y %H:%M:%S")
+    })
+
+
+# Modül yüklendiğinde botu hemen arka planda başlat
+ensure_bot_running()
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=WEB_PORT, debug=False)
+
