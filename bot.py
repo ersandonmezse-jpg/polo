@@ -90,6 +90,16 @@ logger = logging.getLogger(__name__)
 
 TURKEY_TZ = pytz.timezone("Europe/Istanbul")
 
+TRANSFER_LOCK = threading.RLock()
+
+def is_transfer_busy() -> bool:
+    """Transfer kilidinin meşgul olup olmadığını non-blocking olarak kontrol eder."""
+    acquired = TRANSFER_LOCK.acquire(blocking=False)
+    if acquired:
+        TRANSFER_LOCK.release()
+        return False
+    return True
+
 TARGET_COLUMNS = [
     "created_time",
     "çalışma_durumu",
@@ -1874,7 +1884,7 @@ def listen_telegram_updates():
                             if not target_group:
                                 target_group = str(from_chat_id)
 
-                            if TRANSFER_LOCK.locked():
+                            if is_transfer_busy():
                                 send_telegram_message(
                                     f"⏳ <b>Aktarım Sıraya Alındı!</b>\n\n"
                                     f"Şu anda devam eden bir aktarım işlemi var. Tamamlanır tamamlanmaz veriler bu sohbete (<code>{target_group}</code>) aktarılacaktır...",
@@ -1954,8 +1964,6 @@ def listen_telegram_updates():
 
 
 # ── Sheet Kontrol Döngüsü ───────────────────────────────────────────────────
-
-TRANSFER_LOCK = threading.RLock()
 
 
 def run_sheets_transfer(sheets_list: list[dict], target_chat: str = None, force_resend: bool = False):
@@ -2059,7 +2067,7 @@ def check_and_send_sheet(sheet_config: dict, force_resend: bool = False):
 
 
 def check_all_sheets():
-    if TRANSFER_LOCK.locked():
+    if is_transfer_busy():
         logger.info("Transfer kilidi devrede, periyodik kontrol ertelendi.")
         return
     sheets = get_sheets()
