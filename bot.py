@@ -43,6 +43,7 @@ from config import (
 from data_store import (
     get_sheets,
     add_sheet,
+    delete_sheet,
     get_last_sent,
     reset_sheet_last_sent,
     record_message_sent,
@@ -1222,6 +1223,30 @@ def listen_telegram_updates():
                         answer_callback_query(cq_id, "İşlem iptal edildi.")
                         edit_telegram_message(chat_id, message_id, clean_text, reply_markup=build_record_keyboard(s_id, row_num))
 
+                    # 1.11) Tablo Silme Callback'leri
+                    elif cq_data.startswith("delsheet:"):
+                        short_id = cq_data.split(":")[1]
+                        sheet_id = resolve_sheet_id(short_id)
+                        sheets = get_sheets()
+                        target_s = next((s for s in sheets if s.get("id") == sheet_id), None)
+                        s_name = target_s.get("name", "E-Tablo") if target_s else "E-Tablo"
+
+                        if delete_sheet(sheet_id):
+                            answer_callback_query(cq_id, f"'{s_name}' tablosu ve verileri silindi! ✅", show_alert=True)
+                            edit_telegram_message(
+                                chat_id, message_id,
+                                f"🗑️ <b>Google Sheets Tablosu Silindi!</b>\n\n"
+                                f"📝 <b>Tablo:</b> {html.escape(s_name)}\n"
+                                f"🆔 <b>ID:</b> <code>{sheet_id}</code>\n\n"
+                                f"✅ Tablo ve sisteme ait tüm kayıtlı veriler başarıyla temizlendi."
+                            )
+                        else:
+                            answer_callback_query(cq_id, "Tablo silinemedi veya zaten silinmiş.", show_alert=True)
+
+                    elif cq_data == "delsheet_cancel":
+                        answer_callback_query(cq_id, "İptal edildi.")
+                        edit_telegram_message(chat_id, message_id, "❌ Tablo silme işlemi iptal edildi.")
+
                 # ── 2. METİN MESAJLARI & KOMUTLAR ──────────────────────────
                 elif any(k in update for k in ["message", "channel_post", "edited_message"]):
                     msg = update.get("message") or update.get("channel_post") or update.get("edited_message")
@@ -1471,6 +1496,8 @@ def listen_telegram_updates():
                             "  ↳ <i>Bulunulan grubu 'Aktarılacak Hedef Gruplar' listesine ekler. Örn: <code>/grup_ekle Satış Ekibi 1</code>.</i>\n\n"
                             "• <code>/link [Google Sheets Linki]</code>\n"
                             "  ↳ <i>Yeni bir Google E-Tablo linkini bota ekler. Bot yeni satırları otomatik çeker.</i>\n\n"
+                            "• <code>/link_sil [Tablo Adı/Link]</code>\n"
+                            "  ↳ <i>Kayıtlı tabloyu ve sistemdeki tüm geçmiş verilerini tamamen siler.</i>\n\n"
                             "📊 <b>Genel & Durum Komutları:</b>\n"
                             "• <code>/aktar</code> veya <code>/gonder</code>\n"
                             "  ↳ <i>Kayıtlı e-tablolardaki verileri sıfırlayıp gruba etkileşim butonlarıyla aktarır.</i>\n\n"
@@ -1501,6 +1528,7 @@ def listen_telegram_updates():
                             "Komutlar:\n"
                             "• <code>/aktar</code> - Tablodaki verileri gruba aktarır\n"
                             "• <code>/link &lt;Link&gt;</code> - Yeni Google Sheets ekler/günceller\n"
+                            "• <code>/link_sil</code> - Tabloyu ve tüm verilerini siler\n"
                             "• <code>/saha_grubu</code> - Bulunulan grubu Saha Grubu yapar\n"
                             "• <code>/sahaci @kullaniciadi</code> - Sahacı listesine kullanıcı ekler\n"
                             "• <code>/sahaci_sil @kullaniciadi</code> - Sahacı listesinden çıkarır\n"
@@ -1730,6 +1758,59 @@ def listen_telegram_updates():
                                 send_telegram_message(f"ℹ️ {msg_resp}", chat_id=from_chat_id)
                         else:
                             send_telegram_message("⚠️ <b>Geçerli bir link bulunamadı!</b>\nKullanım: <code>/link https://docs.google.com/...</code>", chat_id=from_chat_id)
+
+                    # /link_sil veya /linksil Komutu (Google Sheets Linki ve Verilerini Silme)
+                    elif base_cmd in ["/link_sil", "/linksil", "/tablo_sil", "/tablosil"] or cmd.startswith(("/link_sil", "/linksil", "/tablo_sil")):
+                        parts = text.split(maxsplit=1)
+                        arg_target = parts[1].strip() if len(parts) > 1 else ""
+                        sheets = get_sheets()
+                        if not sheets:
+                            send_telegram_message("⚠️ Sistemde kayıtlı herhangi bir e-tablo bulunamadı.", chat_id=from_chat_id)
+                        elif arg_target:
+                            sheet_to_del = None
+                            for s in sheets:
+                                if (
+                                    arg_target.lower() in s.get("name", "").lower()
+                                    or arg_target in s.get("url", "")
+                                    or arg_target == s.get("id")
+                                ):
+                                    sheet_to_del = s
+                                    break
+
+                            if sheet_to_del:
+                                s_id = sheet_to_del["id"]
+                                s_name = sheet_to_del.get("name", "E-Tablo")
+                                if delete_sheet(s_id):
+                                    send_telegram_message(
+                                        f"🗑️ <b>Google Sheets Tablosu Silindi!</b>\n\n"
+                                        f"📝 <b>Tablo:</b> {html.escape(s_name)}\n"
+                                        f"🆔 <b>ID:</b> <code>{s_id}</code>\n\n"
+                                        f"✅ Tablo ve sisteme ait tüm kayıtlı veriler başarıyla temizlendi.",
+                                        chat_id=from_chat_id
+                                    )
+                                else:
+                                    send_telegram_message("❌ Tablo silinirken bir hata oluştu.", chat_id=from_chat_id)
+                            else:
+                                send_telegram_message(
+                                    f"⚠️ '<code>{html.escape(arg_target)}</code>' ile eşleşen bir tablo bulunamadı.\n"
+                                    f"Kayıtlı tabloları görmek için: <code>/durum</code> veya doğrudan <code>/link_sil</code> yazabilirsiniz.",
+                                    chat_id=from_chat_id
+                                )
+                        else:
+                            buttons = []
+                            for s in sheets:
+                                s_name = s.get("name", "E-Tablo")
+                                s_id = s["id"]
+                                sh_id = get_short_sheet_id(s_id)
+                                buttons.append([{"text": f"🗑️ {s_name} ({s.get('count', 0)} Kayıt)", "callback_data": f"delsheet:{sh_id}"}])
+                            buttons.append([{"text": "❌ İptal", "callback_data": "delsheet_cancel"}])
+
+                            send_telegram_message(
+                                "🗑️ <b>Silmek istediğiniz Google Sheets tablosunu seçin:</b>\n\n"
+                                "<i>⚠️ Seçtiğiniz tablo ve sisteme ait kayıtlı tüm veriler kalıcı olarak silinecektir:</i>",
+                                chat_id=from_chat_id,
+                                reply_markup={"inline_keyboard": buttons}
+                            )
 
                     # /aktar veya /gonder Komutu (Kayıtları Gruba Manuel Aktar)
                     elif base_cmd in ["/aktar", "/gonder", "/yenile", "/sync"]:

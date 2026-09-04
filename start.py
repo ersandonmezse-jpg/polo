@@ -80,6 +80,7 @@ def set_bot_commands():
             {"command": "help", "description": "Tum komutlari ve kilavuzu goster"},
             {"command": "aktar", "description": "Kayıtları gruba butonlarla aktar"},
             {"command": "link", "description": "Google Sheets linki ekle/guncelle"},
+            {"command": "link_sil", "description": "Google Sheets tablosunu ve verilerini sil"},
             {"command": "panel", "description": "Telegram Mini App panelini ac"},
             {"command": "durum", "description": "Sistem ve sheet durumunu goster"},
             {"command": "data_grubu", "description": "Bu grubu ana data grubu yap"},

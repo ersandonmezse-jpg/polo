@@ -735,17 +735,48 @@ def delete_sheet(sheet_id: str) -> bool:
         try:
             with open(SHEETS_FILE, "r", encoding="utf-8") as f:
                 sheets = json.load(f)
+            target_sheet = next((s for s in sheets if s.get("id") == sheet_id), None)
             sheets = [s for s in sheets if s.get("id") != sheet_id]
             save_sheets_unlocked(sheets)
 
-            # State dosyasından da bu sheet'i tamamen temizle
+            # State dosyasından da bu sheet'i ve kayıtlı tüm verilerini tamamen temizle
             try:
                 if os.path.exists(STATE_FILE):
                     with open(STATE_FILE, "r", encoding="utf-8") as f:
                         st = json.load(f)
-                    st.pop(sheet_id, None)
+                    sheet_data = st.pop(sheet_id, None)
                     with open(STATE_FILE, "w", encoding="utf-8") as f:
                         json.dump(st, f, ensure_ascii=False, indent=2)
+
+                    # Bu sheet'e ait Telegram mesajlarını gruptan temizle
+                    if sheet_data and isinstance(sheet_data, dict):
+                        msgs = sheet_data.get("messages", {})
+                        if msgs and TELEGRAM_BOT_TOKEN:
+                            t_chat = (target_sheet.get("chat_id") if target_sheet else None) or TELEGRAM_CHAT_ID
+                            def _del_sheet_messages(c_id, m_dict):
+                                for mid in m_dict.values():
+                                    try:
+                                        requests.post(
+                                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                                            json={"chat_id": c_id, "message_id": mid},
+                                            timeout=5
+                                        )
+                                        time.sleep(0.04)
+                                    except Exception:
+                                        pass
+                            threading.Thread(target=_del_sheet_messages, args=(t_chat, msgs), daemon=True).start()
+            except Exception as e:
+                logger.error(f"State temizleme hatası: {e}")
+
+            # short_sheets.json dosyasından da temizle
+            try:
+                short_file = os.path.join(DATA_DIR, "short_sheets.json")
+                if os.path.exists(short_file):
+                    with open(short_file, "r", encoding="utf-8") as sf:
+                        s_map = json.load(sf)
+                    new_map = {k: v for k, v in s_map.items() if k != sheet_id and v != sheet_id}
+                    with open(short_file, "w", encoding="utf-8") as sf:
+                        json.dump(new_map, sf, ensure_ascii=False, indent=2)
             except Exception:
                 pass
 
@@ -1052,32 +1083,119 @@ def is_record_deleted(sheet_id: str, row_num: int) -> bool:
 
 
 def delete_record(sheet_id: str, row_num: int) -> tuple[bool, str]:
-    state = load_state()
-    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []})
-    deleted_list = sheet_st.setdefault("deleted", [])
+    with STORE_LOCK:
+        state = load_state()
+        sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []})
+        deleted_list = sheet_st.setdefault("deleted", [])
 
-    row_int = int(row_num)
-    if row_int not in deleted_list:
-        deleted_list.append(row_int)
+        row_int = int(row_num)
+        if row_int not in deleted_list:
+            deleted_list.append(row_int)
 
-    msg_id = sheet_st.get("messages", {}).get(str(row_num))
-    tg_deleted = False
+        msg_id = sheet_st.get("messages", {}).get(str(row_num))
+        tg_deleted = False
 
-    if msg_id and TELEGRAM_BOT_TOKEN:
+        # Sheet'e özel chat_id'yi bul
+        target_chat = TELEGRAM_CHAT_ID
         try:
-            api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
-            resp = requests.post(api_url, json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "message_id": msg_id
-            }, timeout=8)
-            tg_deleted = resp.json().get("ok", False)
-            if tg_deleted:
-                logger.info(f"Telegram mesajı #{msg_id} silindi.")
-        except Exception as e:
-            logger.error(f"Telegram mesaj silme hatası: {e}")
+            sheets = get_sheets()
+            s_obj = next((s for s in sheets if s.get("id") == sheet_id), None)
+            if s_obj and s_obj.get("chat_id"):
+                target_chat = s_obj["chat_id"]
+        except Exception:
+            pass
 
-    save_state(state)
-    return True, f"Kayıt silindi{' ve Telegram mesajı kaldırıldı.' if tg_deleted else '.'}"
+        if msg_id and TELEGRAM_BOT_TOKEN:
+            try:
+                api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
+                resp = requests.post(api_url, json={
+                    "chat_id": target_chat,
+                    "message_id": msg_id
+                }, timeout=8)
+                tg_deleted = resp.json().get("ok", False)
+                if tg_deleted:
+                    logger.info(f"Telegram mesajı #{msg_id} ({target_chat}) silindi.")
+            except Exception as e:
+                logger.error(f"Telegram mesaj silme hatası: {e}")
+
+        save_state(state)
+        return True, f"Kayıt silindi{' ve Telegram mesajı kaldırıldı.' if tg_deleted else '.'}"
+
+
+def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: bool = False, delete_from_telegram: bool = True) -> tuple[bool, str, int]:
+    """Seçili kayıtları veya tablodaki tüm verileri sistemden ve Telegram grubundan topluca siler."""
+    with STORE_LOCK:
+        state = load_state()
+        sheet_st = state.get(sheet_id)
+        if not sheet_st:
+            return False, "Tablo state bilgisi bulunamadı.", 0
+
+        # Sheet chat_id'sini belirle
+        target_chat = TELEGRAM_CHAT_ID
+        try:
+            sheets = get_sheets()
+            s_obj = next((s for s in sheets if s.get("id") == sheet_id), None)
+            if s_obj and s_obj.get("chat_id"):
+                target_chat = s_obj["chat_id"]
+        except Exception:
+            pass
+
+        messages_dict = dict(sheet_st.get("messages", {}))
+        deleted_list = sheet_st.setdefault("deleted", [])
+
+        if delete_all:
+            target_rows = [int(k) for k in messages_dict.keys()]
+            if not target_rows and sheet_st.get("last_sent", 0) > 0:
+                target_rows = list(range(sheet_st.get("last_sent", 0)))
+        else:
+            target_rows = [int(r) for r in (row_nums or [])]
+
+        if not target_rows:
+            return True, "Silinecek kayıt seçilmedi.", 0
+
+        # Telegram mesajlarını arka planda sil
+        msg_ids_to_delete = []
+        for r_num in target_rows:
+            m_id = messages_dict.get(str(r_num))
+            if m_id:
+                msg_ids_to_delete.append(m_id)
+
+        if delete_from_telegram and msg_ids_to_delete and TELEGRAM_BOT_TOKEN:
+            def _delete_tg_batch(c_id, m_ids):
+                for mid in m_ids:
+                    try:
+                        requests.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                            json={"chat_id": c_id, "message_id": mid},
+                            timeout=5
+                        )
+                        time.sleep(0.04)
+                    except Exception:
+                        pass
+            threading.Thread(target=_delete_tg_batch, args=(target_chat, msg_ids_to_delete), daemon=True).start()
+
+        # State güncellemesi
+        if delete_all:
+            sheet_st["messages"] = {}
+            sheet_st["statuses"] = {}
+            sheet_st["clients"] = {}
+            sheet_st["global_ids"] = {}
+            sheet_st["deleted"] = []
+            sheet_st["last_sent"] = 0
+            count_deleted = len(target_rows)
+        else:
+            count_deleted = 0
+            for r_num in target_rows:
+                if r_num not in deleted_list:
+                    deleted_list.append(r_num)
+                    count_deleted += 1
+                sheet_st.get("messages", {}).pop(str(r_num), None)
+                sheet_st.get("statuses", {}).pop(str(r_num), None)
+                sheet_st.get("clients", {}).pop(str(r_num), None)
+                sheet_st.get("global_ids", {}).pop(str(r_num), None)
+
+        save_state(state)
+        return True, f"{count_deleted} adet kayıt başarıyla silindi.", count_deleted
 
 
 # ── Brute-Force Rate Limiting (PIN Girişi) ───────────────────────────────────
