@@ -13,6 +13,7 @@ import json
 import os
 import re
 import time
+import hashlib
 from datetime import datetime
 import threading
 import logging
@@ -551,6 +552,67 @@ def fetch_google_sheet_title(sheet_id: str) -> str:
     except Exception as e:
         logger.debug(f"Sheet başlığı çekilemedi ({sheet_id}): {e}")
     return ""
+
+
+# ── Kısaltılmış Sheet ID (Telegram 64 Byte Callback Sınırı İçin) ───────────
+SHORT_SHEET_MAP_FILE = os.path.join(DATA_DIR, "short_sheets.json")
+_short_sheet_cache: dict[str, str] = {}
+
+def get_short_sheet_id(sheet_id: str) -> str:
+    """Telegram inline butonlarındaki 64-byte callback_data sınırını aşmamak için 6 karakterlik benzersiz kısa kimlik üretir."""
+    if not sheet_id:
+        return "def001"
+    s_clean = str(sheet_id).strip()
+    if len(s_clean) <= 8 and not s_clean.startswith("http"):
+        return s_clean
+
+    global _short_sheet_cache
+    if not _short_sheet_cache and os.path.exists(SHORT_SHEET_MAP_FILE):
+        try:
+            with open(SHORT_SHEET_MAP_FILE, "r", encoding="utf-8") as f:
+                _short_sheet_cache = json.load(f)
+        except Exception:
+            _short_sheet_cache = {}
+
+    for k, v in _short_sheet_cache.items():
+        if v == s_clean:
+            return k
+
+    short_id = hashlib.sha256(s_clean.encode("utf-8")).hexdigest()[:6]
+    _short_sheet_cache[short_id] = s_clean
+    try:
+        atomic_save_json(SHORT_SHEET_MAP_FILE, _short_sheet_cache)
+    except Exception:
+        pass
+    return short_id
+
+
+def resolve_sheet_id(short_or_full_id: str) -> str:
+    """Kısa sheet kimliğini tam Google Sheet ID'sine çevirir."""
+    if not short_or_full_id:
+        return ""
+    sid = str(short_or_full_id).strip()
+    if len(sid) > 15:
+        return sid
+
+    global _short_sheet_cache
+    if not _short_sheet_cache and os.path.exists(SHORT_SHEET_MAP_FILE):
+        try:
+            with open(SHORT_SHEET_MAP_FILE, "r", encoding="utf-8") as f:
+                _short_sheet_cache = json.load(f)
+        except Exception:
+            _short_sheet_cache = {}
+
+    if sid in _short_sheet_cache:
+        return _short_sheet_cache[sid]
+
+    for s in get_sheets():
+        full = s.get("id", "")
+        if full and (full == sid or hashlib.sha256(full.encode("utf-8")).hexdigest()[:6] == sid):
+            _short_sheet_cache[sid] = full
+            return full
+
+    return sid
 
 
 # ── Google Sheets Yapılandırma Yönetimi ──────────────────────────────────────

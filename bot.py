@@ -73,6 +73,8 @@ from data_store import (
     check_client_history,
     log_activity_event,
     record_user_interaction,
+    get_short_sheet_id,
+    resolve_sheet_id,
 )
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -227,25 +229,78 @@ def format_message(entry_number: int, row: dict, col_mapping: dict, sheet_name: 
     return message
 
 
+def clean_lead_card_text(raw_text: str) -> str:
+    """Telegram'dan gelen metinden soru, onay, hata ve durum eklerini temizleyip saf kart metnini bırakır."""
+    if not raw_text:
+        return ""
+    t = str(raw_text)
+    split_markers = [
+        "\n\n💳 Onaylanan kredi",
+        "\n\n<i>💳 Onaylanan kredi",
+        "\n\n↪️ Hangi gruba",
+        "\n\n<i>↪️ Hangi gruba",
+        "\n\n↪️",
+        "\n\n<i>↪️",
+        "\n\n❓",
+        "\n\n⚠️",
+        "\n\n🏁",
+        "\n\n🎯",
+        "\n\n<i>(Aktaran:",
+        "\n\n<i>",
+        "\n━━━━━━━━━━━━━━━━━━━━━━\n📌 Durum:",
+        "\n📌 Durum:",
+        "\n📝 Not:",
+    ]
+    for m in split_markers:
+        if m in t:
+            t = t.split(m)[0]
+    return t.strip()
+
+
+def reformat_lead_text(raw_text: str) -> str:
+    """Saf metin olarak dönen kayıt kartını şık HTML formatında kalınlaştırılmış etiketlerle yeniden giydirir."""
+    cleaned = clean_lead_card_text(raw_text)
+    if not cleaned:
+        return ""
+    if "<b>" in cleaned:
+        return cleaned
+
+    t = html.escape(cleaned)
+    t = re.sub(r"^(📋\s*Kayıt\s*#\d+)(\s*—\s*)(.*)$", r"<b>\1</b>\2<i>\3</i>", t, flags=re.MULTILINE)
+    for label in [
+        "🕐 Tarih:",
+        "💼 Çalışma Durumu:",
+        "🆔 T.C. Numarası:",
+        "💳 Kart Limiti:",
+        "📞 Telefon:",
+        "📍 İl / İlçe:",
+        "📌 Önceki Son Durum:",
+    ]:
+        escaped_label = html.escape(label)
+        t = t.replace(escaped_label, f"<b>{escaped_label}</b>")
+    return t
+
+
 def build_record_keyboard(sheet_id: str, row_num: int, is_forwarded: bool = False) -> dict:
-    """Kayıt altına yerleştirilecek standart etkileşim butonları."""
+    """Kayıt altına yerleştirilecek standart etkileşim butonları (Telegram 64 byte limitine tam uyumlu)."""
+    s_id = get_short_sheet_id(sheet_id)
     buttons = [
         [
-            {"text": "📝 Not Ekle", "callback_data": f"note_req:{sheet_id}:{row_num}"},
-            {"text": "🔴 Olumsuz", "callback_data": f"st:{sheet_id}:{row_num}:olumsuz"}
+            {"text": "📝 Not Ekle", "callback_data": f"note_req:{s_id}:{row_num}"},
+            {"text": "🔴 Olumsuz", "callback_data": f"st:{s_id}:{row_num}:olumsuz"}
         ],
         [
-            {"text": "💳 Kredi Düştü", "callback_data": f"kredi_req:{sheet_id}:{row_num}"},
-            {"text": "📵 Cevapsız", "callback_data": f"st:{sheet_id}:{row_num}:cevapsiz"}
+            {"text": "💳 Kredi Düştü", "callback_data": f"kredi_req:{s_id}:{row_num}"},
+            {"text": "📵 Cevapsız", "callback_data": f"st:{s_id}:{row_num}:cevapsiz"}
         ]
     ]
     if is_forwarded:
         buttons.append([
-            {"text": "🏁 İşi Bitir & Geri Çek", "callback_data": f"islem_bitti:{sheet_id}:{row_num}"}
+            {"text": "🏁 İşi Bitir & Geri Çek", "callback_data": f"islem_bitti:{s_id}:{row_num}"}
         ])
     else:
         buttons.append([
-            {"text": "↗️ Gruba Aktar", "callback_data": f"fwd_menu:{sheet_id}:{row_num}"}
+            {"text": "↗️ Gruba Aktar", "callback_data": f"fwd_menu:{s_id}:{row_num}"}
         ])
     return {"inline_keyboard": buttons}
 
@@ -407,7 +462,8 @@ def listen_telegram_updates():
                     if cq_data.startswith("st:"):
                         parts = cq_data.split(":")
                         if len(parts) >= 4:
-                            sheet_id = parts[1]
+                            sheet_id = resolve_sheet_id(parts[1])
+                            s_id = get_short_sheet_id(sheet_id)
                             row_num = int(parts[2])
                             st_key = parts[3]
                             status_label = STATUS_MAP.get(st_key, st_key)
@@ -416,21 +472,22 @@ def listen_telegram_updates():
                             # KPI aktivitesine işle
                             log_activity_event(st_key, sheet_id, row_num, user_name=user_tag)
 
-                            base_text = original_text.split("\n📌 Durum:")[0].split("\n📝 Not:")[0].split("\n↪️")[0].split("\n━━━━━━━━━━━━━━━━━━━━━━\n📌")[0].strip()
+                            base_text = reformat_lead_text(original_text)
                             now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
                             new_text = (
-                                f"{html.escape(base_text)}\n"
+                                f"{base_text}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                                 f"📌 <b>Durum:</b> {status_label} ({html.escape(user_tag)} - {now_time})"
                             )
 
                             answer_callback_query(cq_id, f"Seçildi: {status_label}")
-                            edit_telegram_message(chat_id, message_id, new_text, reply_markup=build_record_keyboard(sheet_id, row_num))
+                            edit_telegram_message(chat_id, message_id, new_text, reply_markup=build_record_keyboard(s_id, row_num))
 
                     # 1.2) "📝 Not Ekle" Tıklandı
                     elif cq_data.startswith("note_req:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
 
                         set_pending_action(user_id, {
@@ -452,36 +509,39 @@ def listen_telegram_updates():
                     # 1.3) "💳 Kredi Düştü" Tıklandı -> Tutar Seçim Butonları
                     elif cq_data.startswith("kredi_req:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
 
                         amount_keyboard = {
                             "inline_keyboard": [
                                 [
-                                    {"text": "5.000 TL", "callback_data": f"kredi_amt:{sheet_id}:{row_num}:5.000 TL"},
-                                    {"text": "10.000 TL", "callback_data": f"kredi_amt:{sheet_id}:{row_num}:10.000 TL"}
+                                    {"text": "5.000 TL", "callback_data": f"kredi_amt:{s_id}:{row_num}:5.000 TL"},
+                                    {"text": "10.000 TL", "callback_data": f"kredi_amt:{s_id}:{row_num}:10.000 TL"}
                                 ],
                                 [
-                                    {"text": "20.000 TL", "callback_data": f"kredi_amt:{sheet_id}:{row_num}:20.000 TL"},
-                                    {"text": "50.000 TL", "callback_data": f"kredi_amt:{sheet_id}:{row_num}:50.000 TL"}
+                                    {"text": "20.000 TL", "callback_data": f"kredi_amt:{s_id}:{row_num}:20.000 TL"},
+                                    {"text": "50.000 TL", "callback_data": f"kredi_amt:{s_id}:{row_num}:50.000 TL"}
                                 ],
                                 [
-                                    {"text": "✍️ Diğer Tutar", "callback_data": f"kredi_custom:{sheet_id}:{row_num}"},
-                                    {"text": "❌ İptal", "callback_data": f"fwd_cancel:{sheet_id}:{row_num}"}
+                                    {"text": "✍️ Diğer Tutar", "callback_data": f"kredi_custom:{s_id}:{row_num}"},
+                                    {"text": "❌ İptal", "callback_data": f"fwd_cancel:{s_id}:{row_num}"}
                                 ]
                             ]
                         }
+                        clean_card = reformat_lead_text(original_text)
                         answer_callback_query(cq_id)
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + "\n\n<i>💳 Onaylanan kredi tutarını seçin:</i>",
+                            clean_card + "\n\n<i>💳 Onaylanan kredi tutarını seçin:</i>",
                             reply_markup=amount_keyboard
                         )
 
                     # 1.4) Diğer Tutar Yazmak İstedi
                     elif cq_data.startswith("kredi_custom:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
 
                         set_pending_action(user_id, {
@@ -503,30 +563,33 @@ def listen_telegram_updates():
                     # 1.5) Tutar Seçildi -> Durumu Güncelle ve SAHA GRUBUNA BİLDİRİM AT
                     elif cq_data.startswith("kredi_amt:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         amount_str = parts[3]
 
                         status_label = f"💳 Kredi Düştü: {amount_str}"
                         set_record_status(sheet_id, row_num, status_label, user_tag)
 
-                        base_text = original_text.split("\n\n<i>💳")[0].split("\n📌 Durum:")[0].split("\n↪️")[0]
+                        base_text = reformat_lead_text(original_text)
                         now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
                         new_text = (
-                            f"{html.escape(base_text)}\n"
+                            f"{base_text}\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
                             f"📌 <b>Durum:</b> {status_label} ({html.escape(user_tag)} - {now_time})"
                         )
 
-                        answer_callback_query(cq_id, f"Kredi kaydedildi: {amount_str}! Saha grubuna iletiliyor...")
-                        edit_telegram_message(chat_id, message_id, new_text, reply_markup=build_record_keyboard(sheet_id, row_num))
+                        edit_telegram_message(chat_id, message_id, new_text, reply_markup=build_record_keyboard(s_id, row_num))
 
                         # SAHA GRUBUNA BİLDİRİM
                         settings = get_settings()
                         saha_chat_id = settings.get("saha_group_id")
                         sahaci_tags = " ".join(settings.get("sahaci_users", [])) or "Saha Ekibi"
 
+                        clean_amt_for_cb = amount_str.replace(" ", "")
+
                         if saha_chat_id:
+                            answer_callback_query(cq_id, f"✅ Kredi kaydedildi: {amount_str}! Saha grubuna iletildi.")
                             saha_msg = (
                                 f"🔔 <b>YENİ KREDİ ONAYLANDI - SAHA BİLGİLENDİRME</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -534,21 +597,31 @@ def listen_telegram_updates():
                                 f"💰 <b>Onaylanan Tutar:</b> <code>{amount_str}</code>\n"
                                 f"👤 <b>Temsilci:</b> {html.escape(user_tag)}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"{html.escape(base_text)}\n"
+                                f"{base_text}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                                 f"👉 <i>Lütfen aşağıdaki butona basarak veya bu mesaja yanıtlayarak IBAN paylaşınız.</i>"
                             )
                             iban_keyboard = {
                                 "inline_keyboard": [
-                                    [{"text": "🏦 IBAN Paylaş", "callback_data": f"iban_req:{sheet_id}:{row_num}:{chat_id}:{message_id}:{amount_str}"}]
+                                    [{"text": "🏦 IBAN Paylaş", "callback_data": f"iban_req:{s_id}:{row_num}:{chat_id}:{message_id}:{clean_amt_for_cb}"}]
                                 ]
                             }
                             send_telegram_message(saha_msg, chat_id=saha_chat_id, reply_markup=iban_keyboard)
+                        else:
+                            answer_callback_query(cq_id, f"✅ Kredi kaydedildi: {amount_str}! (⚠️ Saha grubu henüz tanımlanmamış)", show_alert=True)
+                            send_telegram_message(
+                                f"ℹ️ <b>Kredi Durumu Güncellendi:</b> {amount_str}\n"
+                                f"⚠️ <i>Saha Grubu henüz tanımlı olmadığı için saha ekibine bildirim iletilemedi.\n"
+                                f"Bu grubu saha grubu yapmak için: <code>/saha_grubu</code> yazabilirsiniz.</i>",
+                                chat_id=chat_id,
+                                reply_to_message_id=message_id
+                            )
 
                     # 1.6) Sahacı "🏦 IBAN Paylaş" Butonuna Bastı
                     elif cq_data.startswith("iban_req:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         origin_chat_id = parts[3]
                         origin_msg_id = int(parts[4])
@@ -575,7 +648,8 @@ def listen_telegram_updates():
                     # 1.6.A) "❌ İşlem Kaçtı" Tıklandı
                     elif cq_data.startswith("islem_kacti:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
 
                         set_record_status(sheet_id, row_num, "❌ İşlem Kaçtı", user_tag)
@@ -585,7 +659,7 @@ def listen_telegram_updates():
                         answer_callback_query(cq_id, "İşlem kaçtı olarak kaydedildi.")
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + f"\n\n❌ <b>İşlem Kaçtı</b> ({html.escape(user_tag)} - {now_time})\n<i>🤝 Elinize sağlık!</i>",
+                            reformat_lead_text(original_text) + f"\n\n❌ <b>İşlem Kaçtı</b> ({html.escape(user_tag)} - {now_time})\n<i>🤝 Elinize sağlık!</i>",
                             reply_markup=None
                         )
 
@@ -601,37 +675,39 @@ def listen_telegram_updates():
                     # 1.6.B) "🎯 Atış Atıldı" Tıklandı -> Tutar İsteme Menüsü
                     elif cq_data.startswith("atis_req:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         default_amount = parts[3] if len(parts) > 3 else "10.000 TL"
 
                         atis_amount_kb = {
                             "inline_keyboard": [
                                 [
-                                    {"text": f"🎯 {default_amount}", "callback_data": f"atis_amt:{sheet_id}:{row_num}:{default_amount}"},
-                                    {"text": "10.000 TL", "callback_data": f"atis_amt:{sheet_id}:{row_num}:10.000 TL"}
+                                    {"text": f"🎯 {default_amount}", "callback_data": f"atis_amt:{s_id}:{row_num}:{default_amount.replace(' ', '')}"},
+                                    {"text": "10.000 TL", "callback_data": f"atis_amt:{s_id}:{row_num}:10.000TL"}
                                 ],
                                 [
-                                    {"text": "20.000 TL", "callback_data": f"atis_amt:{sheet_id}:{row_num}:20.000 TL"},
-                                    {"text": "50.000 TL", "callback_data": f"atis_amt:{sheet_id}:{row_num}:50.000 TL"}
+                                    {"text": "20.000 TL", "callback_data": f"atis_amt:{s_id}:{row_num}:20.000TL"},
+                                    {"text": "50.000 TL", "callback_data": f"atis_amt:{s_id}:{row_num}:50.000TL"}
                                 ],
                                 [
-                                    {"text": "✍️ Özel Tutar Yaz", "callback_data": f"atis_custom:{sheet_id}:{row_num}"},
-                                    {"text": "❌ İptal", "callback_data": f"fwd_cancel:{sheet_id}:{row_num}"}
+                                    {"text": "✍️ Özel Tutar Yaz", "callback_data": f"atis_custom:{s_id}:{row_num}"},
+                                    {"text": "❌ İptal", "callback_data": f"fwd_cancel:{s_id}:{row_num}"}
                                 ]
                             ]
                         }
                         answer_callback_query(cq_id)
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + "\n\n<i>🎯 Lütfen atılan tutarı seçiniz:</i>",
+                            reformat_lead_text(original_text) + "\n\n<i>🎯 Lütfen atılan tutarı seçiniz:</i>",
                             reply_markup=atis_amount_kb
                         )
 
                     # 1.6.C) Atış Tutarı Manuel Yazılacak
                     elif cq_data.startswith("atis_custom:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
 
                         set_pending_action(user_id, {
@@ -652,17 +728,19 @@ def listen_telegram_updates():
                     # 1.6.D) Atış Tutarı Seçildi -> SAHA GRUBUNA GÖNDER (Onay / Düşmedi Butonlarıyla)
                     elif cq_data.startswith("atis_amt:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         amt_str = parts[3]
+                        clean_amt = amt_str.replace(" ", "")
 
                         now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
-                        base_txt = original_text.split("\n\n<i>🎯")[0]
+                        base_txt = reformat_lead_text(original_text)
 
                         answer_callback_query(cq_id, f"Atış tutarı ({amt_str}) saha grubuna iletildi.")
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(base_txt) + f"\n\n🎯 <b>Atış Atıldı:</b> {html.escape(amt_str)} ({html.escape(user_tag)} - {now_time})\n<i>⏳ Saha onay bekleniyor...</i>",
+                            f"{base_txt}\n\n🎯 <b>Atış Atıldı:</b> {html.escape(amt_str)} ({html.escape(user_tag)} - {now_time})\n<i>⏳ Saha onay bekleniyor...</i>",
                             reply_markup=None
                         )
 
@@ -673,9 +751,9 @@ def listen_telegram_updates():
                             saha_confirm_kb = {
                                 "inline_keyboard": [
                                     [
-                                        {"text": "✅ Onay", "callback_data": f"saha_onay:{sheet_id}:{row_num}:{chat_id}:{message_id}:{amt_str}"},
-                                        {"text": "🚫 Bloke", "callback_data": f"saha_bloke:{sheet_id}:{row_num}:{chat_id}:{message_id}:{amt_str}"},
-                                        {"text": "⏳ Düşmedi", "callback_data": f"saha_dusmedi:{sheet_id}:{row_num}:{chat_id}:{message_id}:{amt_str}"}
+                                        {"text": "✅ Onay", "callback_data": f"saha_onay:{s_id}:{row_num}:{chat_id}:{message_id}:{clean_amt}"},
+                                        {"text": "🚫 Bloke", "callback_data": f"saha_bloke:{s_id}:{row_num}:{chat_id}:{message_id}:{clean_amt}"},
+                                        {"text": "⏳ Düşmedi", "callback_data": f"saha_dusmedi:{s_id}:{row_num}:{chat_id}:{message_id}:{clean_amt}"}
                                     ]
                                 ]
                             }
@@ -697,7 +775,8 @@ def listen_telegram_updates():
                     # 1.6.E-1) Sahacı "🚫 Bloke" Dedi -> İLK GRUBA BİLGİ VER & PROFİLE BLOKE İŞLE
                     elif cq_data.startswith("saha_bloke:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         origin_chat_id = parts[3]
                         origin_msg_id = int(parts[4])
@@ -709,7 +788,7 @@ def listen_telegram_updates():
                         answer_callback_query(cq_id, "İşlem Bloke Oldu olarak kaydedildi ve bildirildi.", show_alert=True)
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + f"\n\n🚫 <b>BLOKE OLDU</b> ({html.escape(user_tag)})",
+                            reformat_lead_text(original_text) + f"\n\n🚫 <b>BLOKE OLDU</b> ({html.escape(user_tag)})",
                             reply_markup=None
                         )
 
@@ -729,24 +808,26 @@ def listen_telegram_updates():
                     # 1.6.E-2) Sahacı "⏳ Düşmedi" Dedi -> İLK GRUBA BİLGİ VER & SAHAYA "Şimdi Düştü" BUTONU BIRAK
                     elif cq_data.startswith("saha_dusmedi:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         origin_chat_id = parts[3]
                         origin_msg_id = int(parts[4])
                         amt_str = parts[5]
+                        clean_amt = amt_str.replace(" ", "")
 
                         answer_callback_query(cq_id, "Düşmedi bildirimi ilk gruba iletildi.")
                         # Saha grubundaki mesajı güncelle ama "Şimdi Düştü" butonunu açık tut!
                         later_confirm_kb = {
                             "inline_keyboard": [
                                 [
-                                    {"text": "✅ Para Şimdi Düştü (Onayla)", "callback_data": f"saha_onay:{sheet_id}:{row_num}:{origin_chat_id}:{origin_msg_id}:{amt_str}"}
+                                    {"text": "✅ Para Şimdi Düştü (Onayla)", "callback_data": f"saha_onay:{s_id}:{row_num}:{origin_chat_id}:{origin_msg_id}:{clean_amt}"}
                                 ]
                             ]
                         }
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + f"\n\n⏳ <b>Düşmedi Olarak İşaretlendi</b> ({html.escape(user_tag)})\n<i>(Hesaba düşerse aşağıdaki butonla onaylayabilirsiniz)</i>",
+                            reformat_lead_text(original_text) + f"\n\n⏳ <b>Düşmedi Olarak İşaretlendi</b> ({html.escape(user_tag)})\n<i>(Hesaba düşerse aşağıdaki butonla onaylayabilirsiniz)</i>",
                             reply_markup=later_confirm_kb
                         )
 
@@ -760,11 +841,13 @@ def listen_telegram_updates():
                     # 1.6.F) Sahacı "✅ Onay" Verdi -> HAKEDİŞ HESABI & İLK GRUBA ONAY BİLDİRİMİ
                     elif cq_data.startswith("saha_onay:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         origin_chat_id = parts[3]
                         origin_msg_id = int(parts[4])
                         amt_str = parts[5]
+                        clean_amt = amt_str.replace(" ", "")
 
                         # Tutar parse (sayısal)
                         num_matches = re.findall(r"\d+", amt_str.replace(".", "").replace(",", ""))
@@ -780,7 +863,7 @@ def listen_telegram_updates():
                         answer_callback_query(cq_id, "İşlem başarıyla onaylandı! ✅", show_alert=True)
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + f"\n\n✅ <b>Onaylandı</b> ({html.escape(user_tag)})\n💰 Hakediş (%{rate:g}): {saha_hakedis:,.0f} TL",
+                            reformat_lead_text(original_text) + f"\n\n✅ <b>Onaylandı</b> ({html.escape(user_tag)})\n💰 Hakediş (%{rate:g}): {saha_hakedis:,.0f} TL",
                             reply_markup=None
                         )
 
@@ -796,8 +879,8 @@ def listen_telegram_updates():
                         next_step_kb = {
                             "inline_keyboard": [
                                 [
-                                    {"text": "▶️ Devam Et", "callback_data": f"devam_et:{sheet_id}:{row_num}"},
-                                    {"text": "🏁 İşlem Bitti", "callback_data": f"islem_bitti:{sheet_id}:{row_num}:{amt_str}"}
+                                    {"text": "▶️ Devam Et", "callback_data": f"devam_et:{s_id}:{row_num}"},
+                                    {"text": "🏁 İşlem Bitti", "callback_data": f"islem_bitti:{s_id}:{row_num}:{clean_amt}"}
                                 ]
                             ]
                         }
@@ -806,13 +889,14 @@ def listen_telegram_updates():
                     # 1.6.G) "▶️ Devam Et" Tıklandı
                     elif cq_data.startswith("devam_et:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         answer_callback_query(cq_id, "Kayıt açık tutuluyor, devam edebilirsiniz.")
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(original_text) + f"\n\n▶️ <i>İşleme devam ediliyor... ({html.escape(user_tag)})</i>",
-                            reply_markup=build_record_keyboard(sheet_id, row_num)
+                            reformat_lead_text(original_text) + f"\n\n▶️ <i>İşleme devam ediliyor... ({html.escape(user_tag)})</i>",
+                            reply_markup=build_record_keyboard(s_id, row_num)
                         )
 
                     # 1.6.H) "🏁 İşlem Bitti" Tıklandı -> DATAYI GERİ ÇEK VE SÜRE ANALİZİ RAPORLA
@@ -885,28 +969,29 @@ def listen_telegram_updates():
                     # 1.7) Gruba Aktar Menüsü
                     elif cq_data.startswith("fwd_menu:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         groups = get_groups()
 
-                        clean_orig = original_text.split("\n\n<i>↪️")[0].split("\n\n⚠️")[0].split("\n\n❓")[0]
+                        clean_card = reformat_lead_text(original_text)
 
                         if not groups:
                             answer_callback_query(
                                 cq_id,
-                                "⚠️ Henüz aktarılacak bir hedef grup eklenmemiş.",
+                                "⚠️ Henüz aktarılacak bir işlem grubu eklenmemiş.",
                                 show_alert=False
                             )
                             # Mesaj kartını bilgilendirici ve tek tıkla grup ekleme butonuyla güncelle
                             no_group_kb = {
                                 "inline_keyboard": [
-                                    [{"text": "➕ Bu Grubu İşlem Grubu Yap", "callback_data": f"fwd_add_here:{sheet_id}:{row_num}"}],
-                                    [{"text": "❌ İptal / Geri", "callback_data": f"fwd_cancel:{sheet_id}:{row_num}"}]
+                                    [{"text": "➕ Bu Grubu İşlem Grubu Yap", "callback_data": f"fwd_add_here:{s_id}:{row_num}"}],
+                                    [{"text": "❌ İptal / Geri", "callback_data": f"fwd_cancel:{s_id}:{row_num}"}]
                                 ]
                             }
                             edit_telegram_message(
                                 chat_id, message_id,
-                                html.escape(clean_orig) +
+                                clean_card +
                                 "\n\n⚠️ <b>Aktarılacak İşlem Grubu Bulunamadı!</b>\n"
                                 "<i>Kayıtları aktarabilmek için bir işlem grubu tanımlı olmalıdır.\n"
                                 "• Aşağıdaki butona basarak bu grubu işlem grubu yapabilir,\n"
@@ -916,21 +1001,25 @@ def listen_telegram_updates():
                         else:
                             group_buttons = []
                             for g in groups:
-                                group_buttons.append([{"text": f"👥 {g['name']}", "callback_data": f"fwd_sel:{sheet_id}:{row_num}:{g['id']}"}])
+                                group_buttons.append([{"text": f"👥 {g['name']}", "callback_data": f"fwd_sel:{s_id}:{row_num}:{g['id']}"}])
 
-                            group_buttons.append([{"text": "❌ İptal", "callback_data": f"fwd_cancel:{sheet_id}:{row_num}"}])
+                            group_buttons.append([
+                                {"text": "➕ Bu Grubu da Ekle", "callback_data": f"fwd_add_here:{s_id}:{row_num}"},
+                                {"text": "❌ İptal", "callback_data": f"fwd_cancel:{s_id}:{row_num}"}
+                            ])
 
                             answer_callback_query(cq_id)
                             edit_telegram_message(
                                 chat_id, message_id,
-                                html.escape(clean_orig) + "\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>",
+                                clean_card + "\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>",
                                 reply_markup={"inline_keyboard": group_buttons}
                             )
 
                     # 1.7.B) Tek Tıkla Bu Grubu Hedef Grup Yap
                     elif cq_data.startswith("fwd_add_here:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         chat_title = (msg.get("chat") or {}).get("title") or "İşlem Grubu"
                         add_group(chat_title, str(chat_id))
@@ -939,20 +1028,21 @@ def listen_telegram_updates():
                         groups = get_groups()
                         group_buttons = []
                         for g in groups:
-                            group_buttons.append([{"text": f"👥 {g['name']}", "callback_data": f"fwd_sel:{sheet_id}:{row_num}:{g['id']}"}])
-                        group_buttons.append([{"text": "❌ İptal", "callback_data": f"fwd_cancel:{sheet_id}:{row_num}"}])
+                            group_buttons.append([{"text": f"👥 {g['name']}", "callback_data": f"fwd_sel:{s_id}:{row_num}:{g['id']}"}])
+                        group_buttons.append([{"text": "❌ İptal", "callback_data": f"fwd_cancel:{s_id}:{row_num}"}])
 
-                        clean_orig = original_text.split("\n\n<i>↪️")[0].split("\n\n⚠️")[0].split("\n\n❓")[0]
+                        clean_card = reformat_lead_text(original_text)
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(clean_orig) + "\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>",
+                            clean_card + "\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>",
                             reply_markup={"inline_keyboard": group_buttons}
                         )
 
                     # 1.8) Hedef Grup Seçildi -> Onay Adımı
                     elif cq_data.startswith("fwd_sel:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         target_chat_id = parts[3]
 
@@ -962,38 +1052,38 @@ def listen_telegram_updates():
                         confirm_keyboard = {
                             "inline_keyboard": [
                                 [
-                                    {"text": "✅ Evet, Gruba Gönder", "callback_data": f"fwd_do:{sheet_id}:{row_num}:{target_chat_id}"}
+                                    {"text": "✅ Evet, Gruba Gönder", "callback_data": f"fwd_do:{s_id}:{row_num}:{target_chat_id}"}
                                 ],
                                 [
-                                    {"text": "❌ Vazgeç", "callback_data": f"fwd_cancel:{sheet_id}:{row_num}"}
+                                    {"text": "❌ Vazgeç", "callback_data": f"fwd_cancel:{s_id}:{row_num}"}
                                 ]
                             ]
                         }
-                        clean_orig = original_text.replace("\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>", "").split("\n\n❓")[0].split("\n\n⚠️")[0]
+                        clean_card = reformat_lead_text(original_text)
                         answer_callback_query(cq_id)
                         edit_telegram_message(
                             chat_id, message_id,
-                            html.escape(clean_orig) +
-                            f"\n\n❓ <b>Bu kayıt '{html.escape(target_name)}' grubuna aktarılsın mı?</b>",
+                            clean_card + f"\n\n❓ <b>Bu kayıt '{html.escape(target_name)}' grubuna aktarılsın mı?</b>",
                             reply_markup=confirm_keyboard
                         )
 
                     # 1.9) Aktarmayı Onayla
                     elif cq_data.startswith("fwd_do:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
                         target_chat_id = parts[3]
 
                         groups = get_groups()
                         target_name = next((g["name"] for g in groups if str(g["id"]) == target_chat_id), "Hedef Grup")
 
-                        clean_lead_text = original_text.split("\n\n❓")[0].split("\n\n<i>↪️")[0].split("\n\n⚠️")[0]
+                        clean_lead_text = reformat_lead_text(original_text)
 
                         success, target_msg_id = send_telegram_message(
-                            html.escape(clean_lead_text) + f"\n\n<i>(Aktaran: {html.escape(user_tag)})</i>",
+                            clean_lead_text + f"\n\n<i>(Aktaran: {html.escape(user_tag)})</i>",
                             chat_id=target_chat_id,
-                            reply_markup=build_record_keyboard(sheet_id, row_num, is_forwarded=True)
+                            reply_markup=build_record_keyboard(s_id, row_num, is_forwarded=True)
                         )
 
                         if success and target_msg_id:
@@ -1003,12 +1093,12 @@ def listen_telegram_updates():
 
                             now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
                             updated_orig = (
-                                f"{html.escape(clean_lead_text)}\n"
+                                f"{clean_lead_text}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                                 f"↪️ <b>{html.escape(target_name)}</b> grubuna aktarıldı ({html.escape(user_tag)} - {now_time})"
                             )
                             answer_callback_query(cq_id, f"Kayıt {target_name} grubuna aktarıldı! ✅", show_alert=True)
-                            edit_telegram_message(chat_id, message_id, updated_orig, reply_markup=build_record_keyboard(sheet_id, row_num))
+                            edit_telegram_message(chat_id, message_id, updated_orig, reply_markup=build_record_keyboard(s_id, row_num))
                         else:
                             answer_callback_query(
                                 cq_id,
@@ -1018,18 +1108,19 @@ def listen_telegram_updates():
                             # Kartı bilgilendirmeyle orijinal butonlarına döndür
                             edit_telegram_message(
                                 chat_id, message_id,
-                                html.escape(clean_lead_text) + f"\n\n⚠️ <i>{html.escape(target_name)} grubuna aktarım başarısız oldu. Lütfen bot yetkilerini kontrol edip tekrar deneyin.</i>",
-                                reply_markup=build_record_keyboard(sheet_id, row_num)
+                                clean_lead_text + f"\n\n⚠️ <i>{html.escape(target_name)} grubuna aktarım başarısız oldu. Lütfen bot yetkilerini kontrol edip tekrar deneyin.</i>",
+                                reply_markup=build_record_keyboard(s_id, row_num)
                             )
 
                     # 1.10) İptal Et
                     elif cq_data.startswith("fwd_cancel:"):
                         parts = cq_data.split(":")
-                        sheet_id = parts[1]
+                        sheet_id = resolve_sheet_id(parts[1])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = int(parts[2])
-                        clean_text = original_text.split("\n\n❓")[0].split("\n\n<i>↪️")[0].split("\n\n<i>💳")[0]
+                        clean_text = reformat_lead_text(original_text)
                         answer_callback_query(cq_id, "İşlem iptal edildi.")
-                        edit_telegram_message(chat_id, message_id, html.escape(clean_text), reply_markup=build_record_keyboard(sheet_id, row_num))
+                        edit_telegram_message(chat_id, message_id, clean_text, reply_markup=build_record_keyboard(s_id, row_num))
 
                 # ── 2. METİN MESAJLARI & KOMUTLAR ──────────────────────────
                 elif any(k in update for k in ["message", "channel_post", "edited_message"]):
@@ -1066,7 +1157,8 @@ def listen_telegram_updates():
 
                     # Eğer bu kişi bir not yazıyorsa
                     if pending and pending.get("action") == "note":
-                        sheet_id = pending["sheet_id"]
+                        sheet_id = resolve_sheet_id(pending["sheet_id"])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = pending["row_num"]
                         target_chat_id = pending["chat_id"]
                         target_msg_id = pending["message_id"]
@@ -1076,21 +1168,22 @@ def listen_telegram_updates():
                         set_record_status(sheet_id, row_num, note_str, user_tag, note=text)
                         log_activity_event("note", sheet_id, row_num, user_name=user_tag, extra=text)
 
-                        base_text = orig_text.split("\n📝 Not:")[0].split("\n↪️")[0]
+                        base_text = reformat_lead_text(orig_text)
                         now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
                         new_text = (
-                            f"{html.escape(base_text)}\n"
+                            f"{base_text}\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
                             f"📝 <b>Not:</b> {html.escape(text)} ({html.escape(user_tag)} - {now_time})"
                         )
-                        edit_telegram_message(target_chat_id, target_msg_id, new_text, reply_markup=build_record_keyboard(sheet_id, row_num))
+                        edit_telegram_message(target_chat_id, target_msg_id, new_text, reply_markup=build_record_keyboard(s_id, row_num))
                         clear_pending_action(user_id)
                         send_telegram_message(f"✅ Not başarıyla kaydedildi.", chat_id=from_chat_id)
                         continue
 
                     # Eğer özel tutar yazıyorsa
                     elif pending and pending.get("action") == "amount":
-                        sheet_id = pending["sheet_id"]
+                        sheet_id = resolve_sheet_id(pending["sheet_id"])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = pending["row_num"]
                         target_chat_id = pending["chat_id"]
                         target_msg_id = pending["message_id"]
@@ -1100,16 +1193,17 @@ def listen_telegram_updates():
                         status_label = f"💳 Kredi Düştü: {amount_str}"
                         set_record_status(sheet_id, row_num, status_label, user_tag)
 
-                        base_text = orig_text.split("\n\n<i>💳")[0].split("\n📌 Durum:")[0].split("\n↪️")[0]
+                        base_text = reformat_lead_text(orig_text)
                         now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
                         new_text = (
-                            f"{html.escape(base_text)}\n"
+                            f"{base_text}\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
                             f"📌 <b>Durum:</b> {status_label} ({html.escape(user_tag)} - {now_time})"
                         )
-                        edit_telegram_message(target_chat_id, target_msg_id, new_text, reply_markup=build_record_keyboard(sheet_id, row_num))
+                        edit_telegram_message(target_chat_id, target_msg_id, new_text, reply_markup=build_record_keyboard(s_id, row_num))
                         clear_pending_action(user_id)
-                        send_telegram_message(f"✅ Kredi tutarı ({amount_str}) kaydedildi ve saha grubuna yönlendiriliyor.", chat_id=from_chat_id)
+
+                        clean_amt_for_cb = amount_str.replace(" ", "")
 
                         # SAHA GRUBUNA BİLDİRİM
                         settings = get_settings()
@@ -1117,6 +1211,7 @@ def listen_telegram_updates():
                         sahaci_tags = " ".join(settings.get("sahaci_users", [])) or "Saha Ekibi"
 
                         if saha_chat_id:
+                            send_telegram_message(f"✅ Kredi tutarı ({amount_str}) kaydedildi ve saha grubuna yönlendirildi.", chat_id=from_chat_id)
                             saha_msg = (
                                 f"🔔 <b>YENİ KREDİ ONAYLANDI - SAHA BİLGİLENDİRME</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1124,25 +1219,34 @@ def listen_telegram_updates():
                                 f"💰 <b>Onaylanan Tutar:</b> <code>{amount_str}</code>\n"
                                 f"👤 <b>Temsilci:</b> {html.escape(user_tag)}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"{html.escape(base_text)}\n"
+                                f"{base_text}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                                 f"👉 <i>Lütfen aşağıdaki butona basarak IBAN paylaşınız.</i>"
                             )
                             iban_keyboard = {
                                 "inline_keyboard": [
-                                    [{"text": "🏦 IBAN Paylaş", "callback_data": f"iban_req:{sheet_id}:{row_num}:{target_chat_id}:{target_msg_id}:{amount_str}"}]
+                                    [{"text": "🏦 IBAN Paylaş", "callback_data": f"iban_req:{s_id}:{row_num}:{target_chat_id}:{target_msg_id}:{clean_amt_for_cb}"}]
                                 ]
                             }
                             send_telegram_message(saha_msg, chat_id=saha_chat_id, reply_markup=iban_keyboard)
+                        else:
+                            send_telegram_message(
+                                f"✅ Kredi tutarı ({amount_str}) kaydedildi.\n"
+                                f"⚠️ <i>Saha Grubu henüz tanımlanmadığı için saha ekibine bildirim gönderilemedi.\n"
+                                f"Bu grubu saha grubu yapmak için: <code>/saha_grubu</code> yazabilirsiniz.</i>",
+                                chat_id=from_chat_id
+                            )
                         continue
 
                     # Eğer sahacı IBAN yazıyorsa -> İLK GRUBA İLET
                     elif pending and pending.get("action") == "iban":
-                        sheet_id = pending["sheet_id"]
+                        sheet_id = resolve_sheet_id(pending["sheet_id"])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = pending["row_num"]
                         origin_chat_id = pending["origin_chat_id"]
                         origin_msg_id = pending["origin_msg_id"]
                         amount_str = pending["amount_str"]
+                        clean_amt_for_cb = amount_str.replace(" ", "")
 
                         iban_info = text
                         clear_pending_action(user_id)
@@ -1165,8 +1269,8 @@ def listen_telegram_updates():
                         atis_keyboard = {
                             "inline_keyboard": [
                                 [
-                                    {"text": "🎯 Atış Atıldı", "callback_data": f"atis_req:{sheet_id}:{row_num}:{amount_str}"},
-                                    {"text": "❌ İşlem Kaçtı", "callback_data": f"islem_kacti:{sheet_id}:{row_num}"}
+                                    {"text": "🎯 Atış Atıldı", "callback_data": f"atis_req:{s_id}:{row_num}:{clean_amt_for_cb}"},
+                                    {"text": "❌ İşlem Kaçtı", "callback_data": f"islem_kacti:{s_id}:{row_num}"}
                                 ]
                             ]
                         }
@@ -1175,21 +1279,23 @@ def listen_telegram_updates():
 
                     # Eğer atış tutarını manuel yazıyorsa -> SAHA GRUBUNA İLET
                     elif pending and pending.get("action") == "atis_amount":
-                        sheet_id = pending["sheet_id"]
+                        sheet_id = resolve_sheet_id(pending["sheet_id"])
+                        s_id = get_short_sheet_id(sheet_id)
                         row_num = pending["row_num"]
                         target_chat_id = pending["chat_id"]
                         target_msg_id = pending["message_id"]
                         orig_text = pending["original_text"]
                         amt_str = text if "TL" in text.upper() else f"{text} TL"
+                        clean_amt = amt_str.replace(" ", "")
 
                         clear_pending_action(user_id)
                         now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
-                        base_txt = orig_text.split("\n\n<i>🎯")[0]
+                        base_txt = reformat_lead_text(orig_text)
 
                         send_telegram_message(f"✅ Atış tutarı ({amt_str}) saha grubuna iletildi.", chat_id=from_chat_id)
                         edit_telegram_message(
                             target_chat_id, target_msg_id,
-                            html.escape(base_txt) + f"\n\n🎯 <b>Atış Atıldı:</b> {amt_str} ({html.escape(user_tag)} - {now_time})\n<i>⏳ Saha onay bekleniyor...</i>",
+                            f"{base_txt}\n\n🎯 <b>Atış Atıldı:</b> {html.escape(amt_str)} ({html.escape(user_tag)} - {now_time})\n<i>⏳ Saha onay bekleniyor...</i>",
                             reply_markup=None
                         )
 
@@ -1200,8 +1306,8 @@ def listen_telegram_updates():
                             saha_confirm_kb = {
                                 "inline_keyboard": [
                                     [
-                                        {"text": "✅ Onay", "callback_data": f"saha_onay:{sheet_id}:{row_num}:{target_chat_id}:{target_msg_id}:{amt_str}"},
-                                        {"text": "⏳ Düşmedi", "callback_data": f"saha_dusmedi:{sheet_id}:{row_num}:{target_chat_id}:{target_msg_id}:{amt_str}"}
+                                        {"text": "✅ Onay", "callback_data": f"saha_onay:{s_id}:{row_num}:{target_chat_id}:{target_msg_id}:{clean_amt}"},
+                                        {"text": "⏳ Düşmedi", "callback_data": f"saha_dusmedi:{s_id}:{row_num}:{target_chat_id}:{target_msg_id}:{clean_amt}"}
                                     ]
                                 ]
                             }

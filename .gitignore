@@ -34,5 +34,6 @@ settings_config.json
 activity_log.json
 data_events.json
 users_db.json
+short_sheets.json
 *.log
 
