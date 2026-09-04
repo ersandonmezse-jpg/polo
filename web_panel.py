@@ -1296,10 +1296,10 @@ DASHBOARD_HTML = """
                     <span id="sel-badge-{{ sheet.id }}" style="font-size:11px; background:rgba(255,255,255,0.08); color:var(--hint-color); padding:2px 8px; border-radius:12px; font-weight:700;">0 seçildi</span>
                 </div>
                 <div style="display:flex; align-items:center; gap:6px;">
-                    <button type="button" class="sm-btn del" style="padding:4px 10px; font-size:11px; border-radius:6px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); color:#f87171; cursor:pointer;" onclick="bulkDeleteSelected('{{ sheet.id }}')">
+                    <button type="button" class="sm-btn del" style="padding:5px 12px; font-size:11px; border-radius:6px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); color:#f87171; cursor:pointer;" onclick="bulkDeleteSelected('{{ sheet.id }}')">
                         🗑️ Seçilenleri Sil
                     </button>
-                    <button type="button" class="sm-btn del" style="padding:4px 10px; font-size:11px; border-radius:6px; background:rgba(239,68,68,0.25); border:1px solid rgba(239,68,68,0.5); color:#fca5a5; font-weight:700; cursor:pointer;" onclick="bulkDeleteAll('{{ sheet.id }}', '{{ sheet.name }}')">
+                    <button type="button" class="sm-btn del" style="padding:5px 12px; font-size:11px; border-radius:6px; background:rgba(239,68,68,0.25); border:1px solid rgba(239,68,68,0.5); color:#fca5a5; font-weight:700; cursor:pointer;" onclick="bulkDeleteAll('{{ sheet.id }}', '{{ sheet.name|replace(\"'\", \"\\\\'\") }}')">
                         ⚠️ Tüm Dataları Sil
                     </button>
                 </div>
@@ -1308,10 +1308,10 @@ DASHBOARD_HTML = """
             <div class="cards-list" id="list-{{ sheet.id }}">
                 {% if sheet.rows %}
                     {% for row in sheet.rows|reverse %}
-                    <div class="data-card" id="card-{{ sheet.id }}-{{ row.num }}" data-search="{{ row.tc_no }} {{ row.phone }} {{ row.calisma_durumu }} {{ row.lead_status }}">
+                    <div class="data-card" id="card-{{ sheet.id }}-{{ row.raw_row_index }}" data-global-id="{{ row.num }}" data-search="{{ row.tc_no }} {{ row.phone }} {{ row.calisma_durumu }} {{ row.lead_status }}">
                         <div class="card-top">
                             <div style="display:flex; align-items:center; gap:6px;">
-                                <input type="checkbox" class="row-cb-{{ sheet.id }}" value="{{ row.raw_row_index }}" onchange="updateSelection('{{ sheet.id }}')" style="cursor:pointer; width:16px; height:16px; margin-right:2px; accent-color:var(--primary-color);">
+                                <input type="checkbox" class="record-cb" data-sheet="{{ sheet.id }}" value="{{ row.raw_row_index }}" onchange="updateSelection('{{ sheet.id }}')" style="cursor:pointer; width:16px; height:16px; margin-right:2px; accent-color:var(--primary-color);">
                                 <span class="card-id-tag">#{{ row.num }}</span>
                                 {% if row.lead_status %}
                                 <span style="font-size:10px; font-weight:700; background:rgba(34,197,94,0.15); color:#4ade80; border:1px solid rgba(34,197,94,0.3); padding:1px 6px; border-radius:6px;" title="{{ row.lead_user }} - {{ row.lead_time }}">
@@ -1360,7 +1360,7 @@ DASHBOARD_HTML = """
                                 <span>📋</span>
                                 <span>Tümünü Kopyala</span>
                             </button>
-                            <button type="button" class="act-btn delete" onclick="deleteRecordPrompt('{{ sheet.id }}', '{{ row.raw_row_index }}')">
+                            <button type="button" class="act-btn delete" onclick="deleteRecordPrompt('{{ sheet.id }}', '{{ row.raw_row_index }}', '{{ row.num }}')">
                                 <span>🗑️</span>
                                 <span>Sil (Chatten de)</span>
                             </button>
@@ -1376,6 +1376,23 @@ DASHBOARD_HTML = """
             </div>
         </div>
         {% endfor %}
+    </div>
+
+    <!-- Native-style Confirmation Modal (Never blocked by WebApp) -->
+    <div class="links-modal" id="appConfirmModal" style="z-index: 99999;">
+        <div class="modal-content" style="max-width: 360px; text-align: center; padding: 24px 20px;">
+            <div id="appConfirmIcon" style="font-size: 38px; margin-bottom: 12px;">🗑️</div>
+            <h3 id="appConfirmTitle" style="font-size: 17px; font-weight: 700; margin-bottom: 8px; color: var(--text-color);">İşlem Onayı</h3>
+            <p id="appConfirmMsg" style="font-size: 13px; color: var(--hint-color); line-height: 1.5; margin-bottom: 22px; white-space: pre-line;"></p>
+            <div style="display: flex; gap: 10px;">
+                <button type="button" class="sm-btn" onclick="closeAppConfirm()" style="flex: 1; padding: 11px; font-size: 13px; font-weight: 600; border-radius: 10px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.06); color: var(--text-color); cursor: pointer;">
+                    İptal
+                </button>
+                <button type="button" id="appConfirmOkBtn" style="flex: 1; padding: 11px; font-size: 13px; font-weight: 700; border-radius: 10px; border: none; background: #ef4444; color: #fff; cursor: pointer;">
+                    Evet, Sil
+                </button>
+            </div>
+        </div>
     </div>
 
     <!-- Links Management Modal -->
@@ -1486,11 +1503,24 @@ DASHBOARD_HTML = """
             Telegram.WebApp.headerColor = Telegram.WebApp.themeParams.bg_color || '#0c0e14';
         }
 
-        function showToast(msg) {
+        function showToast(msg, isError = false) {
             const toast = document.getElementById("toast");
+            if (!toast) return;
             toast.innerText = msg;
+            if (isError) {
+                toast.style.background = "#ef4444";
+                toast.style.color = "#ffffff";
+            } else {
+                toast.style.background = "var(--text-color)";
+                toast.style.color = "var(--bg-color)";
+            }
             toast.classList.add("show");
-            setTimeout(() => toast.classList.remove("show"), 2200);
+            setTimeout(() => toast.classList.remove("show"), 2500);
+        }
+
+        function appAlert(msg) {
+            showToast(msg, true);
+            triggerHaptic("warning");
         }
 
         function triggerHaptic(type = "light") {
@@ -1498,6 +1528,56 @@ DASHBOARD_HTML = """
                 Telegram.WebApp.HapticFeedback.notificationOccurred(type === "success" ? "success" : "warning");
             }
         }
+
+        let appConfirmCb = null;
+
+        function showAppConfirm(title, message, icon, okText, isDanger, onConfirm) {
+            const modal = document.getElementById("appConfirmModal");
+            if (!modal) {
+                if (confirm(message)) {
+                    if (typeof onConfirm === "function") onConfirm();
+                }
+                return;
+            }
+            document.getElementById("appConfirmTitle").innerText = title || "Onay";
+            document.getElementById("appConfirmMsg").innerText = message || "Bu işlemi yapmak istediğinize emin misiniz?";
+            document.getElementById("appConfirmIcon").innerText = icon || "⚠️";
+            const okBtn = document.getElementById("appConfirmOkBtn");
+            if (okBtn) {
+                okBtn.innerText = okText || "Evet, Onayla";
+                okBtn.style.background = (isDanger !== false) ? "#ef4444" : "var(--primary-color)";
+            }
+
+            appConfirmCb = onConfirm;
+            modal.classList.add("open");
+        }
+
+        function closeAppConfirm() {
+            const modal = document.getElementById("appConfirmModal");
+            if (modal) modal.classList.remove("open");
+            appConfirmCb = null;
+        }
+
+        document.addEventListener("DOMContentLoaded", function() {
+            const okBtn = document.getElementById("appConfirmOkBtn");
+            if (okBtn) {
+                okBtn.addEventListener("click", function() {
+                    const cb = appConfirmCb;
+                    closeAppConfirm();
+                    if (typeof cb === "function") {
+                        cb();
+                    }
+                });
+            }
+            const modal = document.getElementById("appConfirmModal");
+            if (modal) {
+                modal.addEventListener("click", function(e) {
+                    if (e.target === modal) {
+                        closeAppConfirm();
+                    }
+                });
+            }
+        });
 
         function toggleDailySummary() {
             const el = document.getElementById("daily-summary-body");
@@ -1588,31 +1668,46 @@ DASHBOARD_HTML = """
 
         // ── Kayıt Silme Fonksiyonu ──
 
-        function deleteRecordPrompt(sheetId, rowNum) {
-            if (!confirm("#" + rowNum + " numaralı kayıt panelden ve Telegram grubundan silinsin mi?")) {
-                return;
-            }
+        // ── Kayıt Silme Fonksiyonu ──
 
-            fetch("/api/delete-record", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sheet_id: sheetId, row_num: rowNum })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.ok) {
-                    const card = document.getElementById("card-" + sheetId + "-" + rowNum);
-                    if (card) {
-                        card.classList.add("removing");
-                        setTimeout(() => card.remove(), 250);
-                    }
-                    triggerHaptic("success");
-                    showToast(data.message || "Kayıt başarıyla silindi!");
-                } else {
-                    alert("Hata: " + (data.error || "Silinemedi"));
+        function deleteRecordPrompt(sheetId, rowNum, displayNum) {
+            const label = displayNum ? ("#" + displayNum) : ("#" + (parseInt(rowNum) + 1));
+            showAppConfirm(
+                "Kaydı Sil",
+                label + " numaralı kayıt panelden ve Telegram grubundan silinsin mi?",
+                "🗑️",
+                "Evet, Sil",
+                true,
+                function() {
+                    fetch("/api/delete-record", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ sheet_id: sheetId, row_num: rowNum })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.ok) {
+                            const card = document.getElementById("card-" + sheetId + "-" + rowNum);
+                            if (card) {
+                                card.classList.add("removing");
+                                setTimeout(() => {
+                                    card.remove();
+                                    updateSelection(sheetId);
+                                    const list = document.getElementById("list-" + sheetId);
+                                    if (list && list.getElementsByClassName("data-card").length === 0) {
+                                        list.innerHTML = '<div class="empty-box"><div class="e-icon">📭</div><p>Henüz kayıt bulunamadı</p></div>';
+                                    }
+                                }, 250);
+                            }
+                            triggerHaptic("success");
+                            showToast(data.message || "Kayıt başarıyla silindi!");
+                        } else {
+                            appAlert("Hata: " + (data.error || "Silinemedi"));
+                        }
+                    })
+                    .catch(err => appAlert("Bağlantı hatası: " + err));
                 }
-            })
-            .catch(err => alert("Bağlantı hatası: " + err));
+            );
         }
 
         // ── Toplu Kayıt Silme (Bulk Delete) ──
@@ -1623,7 +1718,7 @@ DASHBOARD_HTML = """
             const cards = list.getElementsByClassName("data-card");
             for (let card of cards) {
                 if (card.style.display !== "none") {
-                    const cb = card.querySelector(".row-cb-" + CSS.escape(sheetId)) || card.querySelector("input[type=checkbox]");
+                    const cb = card.querySelector("input[type=checkbox]");
                     if (cb) cb.checked = masterCb.checked;
                 }
             }
@@ -1637,7 +1732,7 @@ DASHBOARD_HTML = """
             let checkedCount = 0;
             let visibleCount = 0;
             for (let card of cards) {
-                const cb = card.querySelector(".row-cb-" + CSS.escape(sheetId)) || card.querySelector("input[type=checkbox]");
+                const cb = card.querySelector("input[type=checkbox]");
                 if (cb) {
                     visibleCount++;
                     if (cb.checked) checkedCount++;
@@ -1647,113 +1742,187 @@ DASHBOARD_HTML = """
             if (badge) badge.innerText = checkedCount + " seçildi";
 
             const masterCb = document.getElementById("select-all-" + sheetId);
-            if (masterCb && visibleCount > 0) {
-                masterCb.checked = (checkedCount === visibleCount);
+            if (masterCb) {
+                masterCb.checked = (visibleCount > 0 && checkedCount === visibleCount);
+                masterCb.indeterminate = (checkedCount > 0 && checkedCount < visibleCount);
             }
         }
 
         function bulkDeleteSelected(sheetId) {
             const list = document.getElementById("list-" + sheetId);
             if (!list) return;
-            const checkedBoxes = Array.from(list.getElementsByClassName("data-card"))
-                .map(c => c.querySelector(".row-cb-" + CSS.escape(sheetId)) || c.querySelector("input[type=checkbox]"))
-                .filter(cb => cb && cb.checked);
+            const cards = Array.from(list.getElementsByClassName("data-card")).filter(c => c.style.display !== "none");
+            const checkedBoxes = [];
+            for (let card of cards) {
+                const cb = card.querySelector("input[type=checkbox]");
+                if (cb && cb.checked) {
+                    checkedBoxes.push(cb);
+                }
+            }
 
             if (checkedBoxes.length === 0) {
-                alert("Lütfen silmek için önce en az bir kayıt seçin.");
+                appAlert("Lütfen silmek için önce en az bir kayıt seçin.");
                 return;
             }
             const count = checkedBoxes.length;
-            if (!confirm("Seçtiğiniz " + count + " adet kaydı sistemden ve Telegram grubundan silmek istediğinize emin misiniz?")) {
-                return;
-            }
 
-            const rowNums = checkedBoxes.map(cb => parseInt(cb.value));
-            fetch("/api/bulk-delete-records", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    sheet_id: sheetId,
-                    row_nums: rowNums,
-                    delete_telegram: true
-                })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.ok) {
-                    showToast(data.message || (count + " kayıt başarıyla silindi!"));
-                    triggerHaptic("success");
-                    setTimeout(() => location.reload(), 600);
-                } else {
-                    alert("Hata: " + (data.error || "Silinemedi"));
+            showAppConfirm(
+                "Seçilenleri Sil",
+                "Seçtiğiniz " + count + " adet kaydı sistemden ve Telegram grubundan silmek istediğinize emin misiniz?",
+                "🗑️",
+                "Evet, " + count + " Kaydı Sil",
+                true,
+                function() {
+                    const rowNums = checkedBoxes.map(cb => parseInt(cb.value)).filter(n => !isNaN(n));
+                    const bar = document.getElementById("bulk-bar-" + sheetId);
+                    if (bar) bar.style.opacity = "0.5";
+
+                    fetch("/api/bulk-delete-records", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            sheet_id: sheetId,
+                            row_nums: rowNums,
+                            delete_telegram: true
+                        })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (bar) bar.style.opacity = "1";
+                        if (data.ok) {
+                            showToast(data.message || (count + " kayıt başarıyla silindi!"));
+                            triggerHaptic("success");
+                            checkedBoxes.forEach(cb => {
+                                const card = cb.closest(".data-card");
+                                if (card) {
+                                    card.classList.add("removing");
+                                    setTimeout(() => card.remove(), 250);
+                                }
+                            });
+                            setTimeout(() => {
+                                updateSelection(sheetId);
+                                const remaining = list.getElementsByClassName("data-card");
+                                if (remaining.length === 0) {
+                                    list.innerHTML = '<div class="empty-box"><div class="e-icon">📭</div><p>Henüz kayıt bulunamadı</p></div>';
+                                }
+                            }, 300);
+                        } else {
+                            appAlert("Hata: " + (data.error || "Silinemedi"));
+                        }
+                    })
+                    .catch(err => {
+                        if (bar) bar.style.opacity = "1";
+                        appAlert("Bağlantı hatası: " + err);
+                    });
                 }
-            })
-            .catch(err => alert("Bağlantı hatası: " + err));
+            );
         }
 
         function bulkDeleteAll(sheetId, sheetName) {
-            if (!confirm("⚠️ DİKKAT!\n'" + sheetName + "' tablosundaki TÜM kayıtları sistemden ve Telegram grubundan tamamen silmek istediğinize emin misiniz?\n\nBu işlem geri alınamaz!")) {
-                return;
-            }
+            const list = document.getElementById("list-" + sheetId);
+            const cards = list ? Array.from(list.getElementsByClassName("data-card")) : [];
+            const allRowNums = cards.map(c => {
+                const cb = c.querySelector("input[type=checkbox]");
+                return cb ? parseInt(cb.value) : null;
+            }).filter(n => n !== null && !isNaN(n));
 
-            fetch("/api/bulk-delete-records", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    sheet_id: sheetId,
-                    all: true,
-                    delete_telegram: true
-                })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.ok) {
-                    showToast("Tüm kayıtlar başarıyla temizlendi!");
-                    triggerHaptic("success");
-                    setTimeout(() => location.reload(), 600);
-                } else {
-                    alert("Hata: " + (data.error || "Temizlenemedi"));
+            showAppConfirm(
+                "⚠️ TÜM Dataları Sil",
+                "'" + (sheetName || "Bu tablo") + "' tablosundaki TÜM kayıtları sistemden ve Telegram grubundan tamamen silmek istediğinize emin misiniz?\n\nBu işlem geri alınamaz!",
+                "⚠️",
+                "Evet, Hepsini Sil",
+                true,
+                function() {
+                    const bar = document.getElementById("bulk-bar-" + sheetId);
+                    if (bar) bar.style.opacity = "0.5";
+
+                    fetch("/api/bulk-delete-records", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            sheet_id: sheetId,
+                            all: true,
+                            row_nums: allRowNums,
+                            delete_telegram: true
+                        })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (bar) bar.style.opacity = "1";
+                        if (data.ok) {
+                            showToast(data.message || "Tüm kayıtlar başarıyla temizlendi!");
+                            triggerHaptic("success");
+                            if (list) {
+                                list.innerHTML = '<div class="empty-box"><div class="e-icon">📭</div><p>Henüz kayıt bulunamadı</p></div>';
+                            }
+                            const badge = document.getElementById("sel-badge-" + sheetId);
+                            if (badge) badge.innerText = "0 seçildi";
+                            const masterCb = document.getElementById("select-all-" + sheetId);
+                            if (masterCb) { masterCb.checked = false; masterCb.indeterminate = false; }
+                        } else {
+                            appAlert("Hata: " + (data.error || "Temizlenemedi"));
+                        }
+                    })
+                    .catch(err => {
+                        if (bar) bar.style.opacity = "1";
+                        appAlert("Bağlantı hatası: " + err);
+                    });
                 }
-            })
-            .catch(err => alert("Bağlantı hatası: " + err));
+            );
         }
 
         function restoreDefaultSheet() {
-            if (!confirm("Varsayılan 'zigiligo' tablosu sisteme eklensin mi?")) return;
-            fetch("/api/restore-default-sheet", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" }
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.ok) {
-                    showToast(data.message || "Varsayılan tablo yüklendi!");
-                    triggerHaptic("success");
-                    setTimeout(() => location.reload(), 600);
-                } else {
-                    alert("Hata: " + (data.message || data.error));
+            showAppConfirm(
+                "Varsayılan Tablo",
+                "Varsayılan 'zigiligo' tablosu sisteme eklensin mi?",
+                "⚡",
+                "Evet, Yükle",
+                false,
+                function() {
+                    fetch("/api/restore-default-sheet", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" }
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.ok) {
+                            showToast(data.message || "Varsayılan tablo yüklendi!");
+                            triggerHaptic("success");
+                            setTimeout(() => location.reload(), 600);
+                        } else {
+                            appAlert("Hata: " + (data.message || data.error));
+                        }
+                    })
+                    .catch(err => appAlert("Bağlantı hatası: " + err));
                 }
-            })
-            .catch(err => alert("Bağlantı hatası: " + err));
+            );
         }
 
         function wipeAllData() {
-            if (!confirm("⚠️ DİKKAT: TÜM SİSTEMİ SIFIRLAMA ONAYI\n\nBu işlem:\n• Gruptaki tüm Telegram mesajlarını siler\n• Tüm müşteri verilerini, sayaçları ve durumları sıfırlar\n• Hafızayı tamamen temizler\n\nDevam etmek istediğinize emin misiniz?")) return;
-            fetch("/api/wipe-all-data", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" }
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.ok) {
-                    showToast(data.message || "Tüm veriler sıfırlandı!");
-                    triggerHaptic("success");
-                    setTimeout(() => location.reload(), 800);
-                } else {
-                    alert("Hata: " + (data.message || data.error));
+            showAppConfirm(
+                "⚠️ SİSTEMİ SIFIRLA",
+                "DİKKAT: TÜM SİSTEMİ SIFIRLAMA ONAYI\n\nBu işlem:\n• Gruptaki tüm Telegram mesajlarını siler\n• Tüm müşteri verilerini, sayaçları ve durumları sıfırlar\n• Hafızayı tamamen temizler\n\nDevam etmek istediğinize emin misiniz?",
+                "⚠️",
+                "Evet, Sıfırla",
+                true,
+                function() {
+                    fetch("/api/wipe-all-data", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" }
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.ok) {
+                            showToast(data.message || "Tüm veriler sıfırlandı!");
+                            triggerHaptic("success");
+                            setTimeout(() => location.reload(), 800);
+                        } else {
+                            appAlert("Hata: " + (data.message || data.error));
+                        }
+                    })
+                    .catch(err => appAlert("Bağlantı hatası: " + err));
                 }
-            })
-            .catch(err => alert("Bağlantı hatası: " + err));
+            );
         }
 
         // ── Link Yönetimi Modalı ──
@@ -1770,7 +1939,7 @@ DASHBOARD_HTML = """
             const url = document.getElementById("newSheetUrl").value.trim();
 
             if (!url) {
-                alert("Lütfen geçerli bir Google Sheets linki girin.");
+                appAlert("Lütfen geçerli bir Google Sheets linki girin.");
                 return;
             }
 
@@ -1786,10 +1955,10 @@ DASHBOARD_HTML = """
                     triggerHaptic("success");
                     setTimeout(() => location.reload(), 800);
                 } else {
-                    alert("Uyarı: " + (data.error || data.message || "Link eklenemedi."));
+                    appAlert("Uyarı: " + (data.error || data.message || "Link eklenemedi."));
                 }
             })
-            .catch(err => alert("Bağlantı hatası: " + err));
+            .catch(err => appAlert("Bağlantı hatası: " + err));
         }
 
         function toggleSheet(sheetId) {
@@ -1804,31 +1973,36 @@ DASHBOARD_HTML = """
                     showToast("Sheet durumu güncellendi!");
                     setTimeout(() => location.reload(), 600);
                 } else {
-                    alert("Hata: " + data.error);
+                    appAlert("Hata: " + data.error);
                 }
             });
         }
 
         function removeSheet(sheetId, name) {
-            if (!confirm("⚠️ '" + name + "' tablosunu ve sistemde kayıtlı olan TÜM verilerini silmek istediğinize emin misiniz?\n\nBu işlem geri alınamaz!")) {
-                return;
-            }
-
-            fetch("/api/delete-sheet", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sheet_id: sheetId })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.ok) {
-                    showToast("Tablo ve verileri tamamen silindi!");
-                    triggerHaptic("success");
-                    setTimeout(() => location.reload(), 600);
-                } else {
-                    alert("Hata: " + data.error);
+            showAppConfirm(
+                "Tabloyu Kaldır",
+                "⚠️ '" + (name || "Bu") + "' tablosunu ve sistemde kayıtlı olan TÜM verilerini silmek istediğinize emin misiniz?\n\nBu işlem geri alınamaz!",
+                "🗑️",
+                "Evet, Kaldır",
+                true,
+                function() {
+                    fetch("/api/delete-sheet", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ sheet_id: sheetId })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.ok) {
+                            showToast("Tablo ve verileri tamamen silindi!");
+                            triggerHaptic("success");
+                            setTimeout(() => location.reload(), 600);
+                        } else {
+                            appAlert("Hata: " + data.error);
+                        }
+                    });
                 }
-            });
+            );
         }
 
         // ── Grup Yönetimi Modalı ──
@@ -1845,7 +2019,7 @@ DASHBOARD_HTML = """
             const chatId = document.getElementById("newGroupChatId").value.trim();
 
             if (!chatId) {
-                alert("Lütfen geçerli bir Grup Chat ID girin.");
+                appAlert("Lütfen geçerli bir Grup Chat ID girin.");
                 return;
             }
 
@@ -1861,31 +2035,36 @@ DASHBOARD_HTML = """
                     triggerHaptic("success");
                     setTimeout(() => location.reload(), 800);
                 } else {
-                    alert("Hata: " + (data.error || data.message || "Grup eklenemedi."));
+                    appAlert("Hata: " + (data.error || data.message || "Grup eklenemedi."));
                 }
             })
-            .catch(err => alert("Bağlantı hatası: " + err));
+            .catch(err => appAlert("Bağlantı hatası: " + err));
         }
 
         function removeGroup(chatId, name) {
-            if (!confirm("'" + name + "' grubunu aktarım listesinden kaldırmak istediğinize emin misiniz?")) {
-                return;
-            }
-
-            fetch("/api/delete-group", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: chatId })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.ok) {
-                    showToast("Grup kaldırıldı!");
-                    setTimeout(() => location.reload(), 600);
-                } else {
-                    alert("Hata: " + data.error);
+            showAppConfirm(
+                "Grubu Kaldır",
+                "'" + (name || "Bu") + "' grubunu aktarım listesinden kaldırmak istediğinize emin misiniz?",
+                "👥",
+                "Evet, Kaldır",
+                true,
+                function() {
+                    fetch("/api/delete-group", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ chat_id: chatId })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.ok) {
+                            showToast("Grup kaldırıldı!");
+                            setTimeout(() => location.reload(), 600);
+                        } else {
+                            appAlert("Hata: " + data.error);
+                        }
+                    });
                 }
-            });
+            );
         }
         // Token'ı localStorage'dan alıp her API isteğine otomatik iliştir
         (function() {

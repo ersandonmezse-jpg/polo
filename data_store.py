@@ -1097,15 +1097,18 @@ def clear_pending_action(user_id: int):
 
 
 def is_record_deleted(sheet_id: str, row_num: int) -> bool:
+    sheet_key = resolve_sheet_id(sheet_id) or sheet_id
     state = load_state()
-    deleted_list = state.get(sheet_id, {}).get("deleted", [])
+    sheet_st = state.get(sheet_key) or state.get(sheet_id, {})
+    deleted_list = sheet_st.get("deleted", [])
     return int(row_num) in deleted_list
 
 
 def delete_record(sheet_id: str, row_num: int) -> tuple[bool, str]:
     with STORE_LOCK:
         state = load_state()
-        sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []})
+        sheet_key = resolve_sheet_id(sheet_id) or sheet_id
+        sheet_st = state.setdefault(sheet_key, {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []})
         deleted_list = sheet_st.setdefault("deleted", [])
 
         row_int = int(row_num)
@@ -1113,13 +1116,18 @@ def delete_record(sheet_id: str, row_num: int) -> tuple[bool, str]:
             deleted_list.append(row_int)
 
         msg_id = sheet_st.get("messages", {}).get(str(row_num))
+        sheet_st.get("messages", {}).pop(str(row_num), None)
+        sheet_st.get("statuses", {}).pop(str(row_num), None)
+        sheet_st.get("clients", {}).pop(str(row_num), None)
+        sheet_st.get("forwarded", {}).pop(str(row_num), None)
+        sheet_st.get("global_ids", {}).pop(str(row_num), None)
         tg_deleted = False
 
         # Sheet'e özel chat_id'yi bul
         target_chat = TELEGRAM_CHAT_ID
         try:
             sheets = get_sheets()
-            s_obj = next((s for s in sheets if s.get("id") == sheet_id), None)
+            s_obj = next((s for s in sheets if (s.get("id") == sheet_key or s.get("id") == sheet_id)), None)
             if s_obj and s_obj.get("chat_id"):
                 target_chat = s_obj["chat_id"]
         except Exception:
@@ -1146,7 +1154,8 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
     """Seçili kayıtları veya tablodaki tüm verileri sistemden ve Telegram grubundan topluca siler."""
     with STORE_LOCK:
         state = load_state()
-        sheet_st = state.get(sheet_id)
+        resolved_id = resolve_sheet_id(sheet_id) or sheet_id
+        sheet_st = state.get(resolved_id) or state.get(sheet_id)
         if not sheet_st:
             if delete_all:
                 return True, "Tabloda zaten silinecek kayıt yok.", 0
@@ -1156,7 +1165,7 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
         target_chat = TELEGRAM_CHAT_ID
         try:
             sheets = get_sheets()
-            s_obj = next((s for s in sheets if s.get("id") == sheet_id), None)
+            s_obj = next((s for s in sheets if (s.get("id") == resolved_id or s.get("id") == sheet_id)), None)
             if s_obj and s_obj.get("chat_id"):
                 target_chat = s_obj["chat_id"]
         except Exception:
@@ -1166,32 +1175,55 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
         deleted_list = sheet_st.setdefault("deleted", [])
 
         if delete_all:
-            target_rows = [int(k) for k in messages_dict.keys()]
-            if not target_rows and sheet_st.get("last_sent", 0) > 0:
-                target_rows = list(range(sheet_st.get("last_sent", 0)))
+            all_indices = set(int(k) for k in messages_dict.keys())
+            last_sent = sheet_st.get("last_sent", 0)
+            if last_sent > 0:
+                all_indices.update(range(last_sent))
+            if row_nums:
+                all_indices.update(int(r) for r in row_nums)
+            target_rows = sorted(list(all_indices))
         else:
             target_rows = [int(r) for r in (row_nums or [])]
 
-        if not target_rows:
+        if not target_rows and not delete_all:
             return True, "Silinecek kayıt seçilmedi.", 0
 
         # Telegram mesajlarını arka planda sil
         msg_ids_to_delete = []
-        for r_num in target_rows:
-            m_id = messages_dict.get(str(r_num))
-            if m_id:
-                msg_ids_to_delete.append(m_id)
+        if delete_all:
+            msg_ids_to_delete = list(set([m for m in messages_dict.values() if m]))
+        else:
+            for r_num in target_rows:
+                m_id = messages_dict.get(str(r_num))
+                if m_id:
+                    msg_ids_to_delete.append(m_id)
 
         if delete_from_telegram and msg_ids_to_delete and TELEGRAM_BOT_TOKEN:
             def _delete_tg_batch(c_id, m_ids):
-                for mid in m_ids:
+                # 1. deleteMessages ile toplu silme dene (Bot API 7.0+)
+                chunk_size = 100
+                remaining_mids = []
+                for i in range(0, len(m_ids), chunk_size):
+                    chunk = m_ids[i:i+chunk_size]
+                    try:
+                        res = requests.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessages",
+                            json={"chat_id": c_id, "message_ids": chunk},
+                            timeout=6
+                        )
+                        if not (res.status_code == 200 and res.json().get("ok")):
+                            remaining_mids.extend(chunk)
+                    except Exception:
+                        remaining_mids.extend(chunk)
+                # 2. Kalan veya tekil mesajlar için deleteMessage dene
+                for mid in remaining_mids:
                     try:
                         requests.post(
                             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
                             json={"chat_id": c_id, "message_id": mid},
                             timeout=5
                         )
-                        time.sleep(0.04)
+                        time.sleep(0.03)
                     except Exception:
                         pass
             threading.Thread(target=_delete_tg_batch, args=(target_chat, msg_ids_to_delete), daemon=True).start()
@@ -1201,10 +1233,6 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
             for r_num in target_rows:
                 if r_num not in deleted_list:
                     deleted_list.append(r_num)
-            max_idx = max(target_rows + [sheet_st.get("last_sent", 0), 200])
-            for r in range(max_idx + 1):
-                if r not in deleted_list:
-                    deleted_list.append(r)
 
             try:
                 if os.path.exists(CLIENTS_FILE):
@@ -1213,7 +1241,7 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
                     if isinstance(clients, dict):
                         new_clients = {
                             k: v for k, v in clients.items()
-                            if isinstance(v, dict) and v.get("sheet_id") != sheet_id
+                            if isinstance(v, dict) and v.get("sheet_id") not in (sheet_id, resolved_id)
                         }
                         with open(CLIENTS_FILE, "w", encoding="utf-8") as cf:
                             json.dump(new_clients, cf, ensure_ascii=False, indent=2)
@@ -1223,6 +1251,7 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
             sheet_st["messages"] = {}
             sheet_st["statuses"] = {}
             sheet_st["clients"] = {}
+            sheet_st["forwarded"] = {}
             sheet_st["global_ids"] = {}
             count_deleted = len(target_rows)
         else:
@@ -1234,6 +1263,7 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
                 sheet_st.get("messages", {}).pop(str(r_num), None)
                 sheet_st.get("statuses", {}).pop(str(r_num), None)
                 sheet_st.get("clients", {}).pop(str(r_num), None)
+                sheet_st.get("forwarded", {}).pop(str(r_num), None)
                 sheet_st.get("global_ids", {}).pop(str(r_num), None)
 
         save_state(state)
