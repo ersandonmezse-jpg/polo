@@ -1682,8 +1682,26 @@ def listen_telegram_updates():
                         if not active_sheets:
                             send_telegram_message("⚠️ Aktarılacak kayıtlı bir e-tablo bulunamadı. Lütfen <code>/link [Google Sheets Linki]</code> ile tablo ekleyin.", chat_id=from_chat_id)
                         else:
-                            target_group = str(from_chat_id) if str(from_chat_id).startswith("-") else get_main_chat_id()
-                            send_telegram_message(f"🚀 <b>Aktarım Başlatıldı!</b>\n\nKayıtlı e-tablolardaki tüm veriler <code>{target_group}</code> grubuna etkileşim butonlarıyla aktarılıyor...", chat_id=from_chat_id)
+                            # Hedef belirleme: Eğer komutun yanına hedef yazılmışsa (Örn: /aktar -1003811756368 veya /aktar data)
+                            target_group = None
+                            if len(parts) > 1:
+                                arg_target = parts[1].strip()
+                                for g in get_groups():
+                                    if arg_target.lower() in g.get("name", "").lower() or arg_target == str(g.get("id")):
+                                        target_group = str(g.get("id"))
+                                        break
+                                if not target_group and (arg_target.startswith("-") or arg_target.isdigit()):
+                                    target_group = arg_target
+
+                            # Eğer parametre yoksa: Komut nerede yazıldıysa (ister özel sohbet ister grup) doğrudan ORAYA aktar!
+                            if not target_group:
+                                target_group = str(from_chat_id)
+
+                            send_telegram_message(
+                                f"🚀 <b>Aktarım Başlatıldı!</b>\n\n"
+                                f"Kayıtlı e-tablolardaki tüm veriler bu sohbete (<code>{target_group}</code>) etkileşim butonlarıyla aktarılıyor...",
+                                chat_id=from_chat_id
+                            )
                             for s in active_sheets:
                                 s_cfg = dict(s)
                                 s_cfg["chat_id"] = target_group
@@ -1697,8 +1715,8 @@ def listen_telegram_updates():
                     # /sifirla Komutu (Aktarım sayaçlarını sıfırla)
                     elif base_cmd in ["/sifirla", "/reset"]:
                         reset_sheet_last_sent()
-                        target_group = str(from_chat_id) if str(from_chat_id).startswith("-") else get_main_chat_id()
-                        send_telegram_message(f"🔄 <b>Aktarım sayaçları sıfırlandı!</b>\nTüm kayıtlar <code>{target_group}</code> grubuna baştan aktarılıyor...", chat_id=from_chat_id)
+                        target_group = str(from_chat_id)
+                        send_telegram_message(f"🔄 <b>Aktarım sayaçları sıfırlandı!</b>\nTüm kayıtlar <code>{target_group}</code> sohbetine baştan aktarılıyor...", chat_id=from_chat_id)
                         for s in get_sheets():
                             if s.get("active", True):
                                 s_cfg = dict(s)
@@ -1808,18 +1826,26 @@ def check_and_send_sheet(sheet_config: dict, force_resend: bool = False):
         tc_no = row.get(col_mapping.get("t.c_numaranız", ""), "")
 
         success, msg_id = send_telegram_message(message, chat_id=target_chat, reply_markup=keyboard)
+        if not success:
+            time.sleep(2)
+            success, msg_id = send_telegram_message(message, chat_id=target_chat, reply_markup=keyboard)
+
         if success:
             record_message_sent(sheet_id, entry_number, msg_id or 0, phone=phone, tc_no=tc_no, global_id=global_lead_id)
             sent_count += 1
             time.sleep(1)
         else:
-            logger.error(f"[{sheet_name}] Satır #{entry_number} {target_chat} grubuna gönderilemedi.")
-            break
+            logger.error(f"[{sheet_name}] Satır #{entry_number} {target_chat} sohbetine gönderilemedi.")
 
     if sent_count > 0:
-        logger.info(f"[{sheet_name}] {sent_count} adet kayıt {target_chat} grubuna başarıyla aktarıldı.")
+        logger.info(f"[{sheet_name}] {sent_count} adet kayıt {target_chat} sohbetine başarıyla aktarıldı.")
         send_telegram_message(
-            f"✅ <b>{html.escape(sheet_name)}</b> tablosundan <b>{sent_count} adet kayıt</b> <code>{target_chat}</code> grubuna başarıyla aktarıldı!",
+            f"✅ <b>{html.escape(sheet_name)}</b> tablosundan <b>{sent_count} adet kayıt</b> <code>{target_chat}</code> sohbetine başarıyla aktarıldı!",
+            chat_id=target_chat
+        )
+    elif force_resend:
+        send_telegram_message(
+            f"⚠️ <b>{html.escape(sheet_name)}</b> tablosundaki kayıtlar aktarılamadı (Telegram gönderim hatası).",
             chat_id=target_chat
         )
 

@@ -52,7 +52,22 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.secret_key = os.urandom(32)
+app.config.update(
+    SECRET_KEY=os.environ.get("FLASK_SECRET_KEY", "fixed_rdm_bot_secret_key_2026"),
+    SESSION_COOKIE_NAME="tg_session",
+    SESSION_COOKIE_SAMESITE="None",
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    PERMANENT_SESSION_LIFETIME=30 * 86400,
+)
+
+import hashlib
+
+def get_auth_token() -> str:
+    return hashlib.sha256(f"{ADMIN_PIN}_salt_rdm_2026".encode()).hexdigest()[:32]
+
+def is_valid_token(token: str) -> bool:
+    return bool(token and token == get_auth_token())
 
 @app.after_request
 def allow_telegram_iframe(response):
@@ -177,9 +192,15 @@ def get_client_ip():
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not session.get("logged_in"):
-            return redirect(url_for("login"))
-        return f(*args, **kwargs)
+        if session.get("logged_in"):
+            return f(*args, **kwargs)
+        req_token = request.args.get("token") or request.headers.get("X-Auth-Token")
+        if req_token and is_valid_token(req_token):
+            session["logged_in"] = True
+            return f(*args, **kwargs)
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "success": False, "error": "Unauthorized"}), 401
+        return redirect(url_for("login"))
     return decorated
 
 
@@ -341,7 +362,7 @@ LOGIN_HTML = """
             <div class="pin-dot" id="dot-3"></div>
         </div>
 
-        <form method="POST" id="pinForm">
+        <form method="POST" action="/login" id="pinForm">
             <input type="hidden" name="pin" id="pinInput">
         </form>
 
@@ -367,7 +388,16 @@ LOGIN_HTML = """
             Telegram.WebApp.expand();
         }
 
+        // Önceden oturum açılmış ve geçerli token varsa otomatik panele yönlendir
+        try {
+            const savedToken = localStorage.getItem("tg_auth_token");
+            if (savedToken && !window.location.search.includes("logout")) {
+                window.location.replace("/?token=" + encodeURIComponent(savedToken));
+            }
+        } catch (e) {}
+
         let enteredPin = "";
+        let isSubmitting = false;
         const pinInput = document.getElementById("pinInput");
         const form = document.getElementById("pinForm");
 
@@ -388,7 +418,44 @@ LOGIN_HTML = """
             }
         }
 
+        async function submitPinAjax(pinVal) {
+            if (isSubmitting) return;
+            isSubmitting = true;
+
+            const btns = document.querySelectorAll(".num-btn");
+            btns.forEach(b => b.disabled = true);
+            const subTitle = document.querySelector(".subtitle");
+            if (subTitle) subTitle.innerHTML = "⏳ <b>Giriş doğrulanıyor...</b>";
+
+            try {
+                const res = await fetch("/api/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ pin: pinVal })
+                });
+                const data = await res.json();
+                if (res.ok && data.success && data.token) {
+                    try { localStorage.setItem("tg_auth_token", data.token); } catch(e){}
+                    triggerHaptic("success");
+                    if (subTitle) subTitle.innerHTML = "✅ <b>Giriş başarılı, açılıyor...</b>";
+                    window.location.replace("/?token=" + encodeURIComponent(data.token));
+                } else {
+                    triggerHaptic("warning");
+                    alert(data.error || "Yanlış PIN kodu!");
+                    clearPin();
+                    if (subTitle) subTitle.innerHTML = "PIN kodunu tuşlayın";
+                    isSubmitting = false;
+                    btns.forEach(b => b.disabled = false);
+                }
+            } catch (err) {
+                console.warn("AJAX login failed, falling back to form submit", err);
+                pinInput.value = pinVal;
+                form.submit();
+            }
+        }
+
         function pressKey(num) {
+            if (isSubmitting) return;
             if (enteredPin.length < 4) {
                 enteredPin += num;
                 triggerHaptic("light");
@@ -396,7 +463,7 @@ LOGIN_HTML = """
 
                 if (enteredPin.length === 4) {
                     pinInput.value = enteredPin;
-                    setTimeout(() => form.submit(), 150);
+                    setTimeout(() => submitPinAjax(enteredPin), 100);
                 }
             }
         }
@@ -1554,6 +1621,27 @@ DASHBOARD_HTML = """
                 }
             });
         }
+        // Token'ı localStorage'dan alıp her API isteğine otomatik iliştir
+        (function() {
+            try {
+                const p = new URLSearchParams(window.location.search);
+                const t = p.get("token");
+                if (t) localStorage.setItem("tg_auth_token", t);
+                const token = localStorage.getItem("tg_auth_token");
+                if (token) {
+                    const origFetch = window.fetch;
+                    window.fetch = function(url, opts = {}) {
+                        opts.headers = opts.headers || {};
+                        if (opts.headers instanceof Headers) {
+                            opts.headers.set("X-Auth-Token", token);
+                        } else {
+                            opts.headers["X-Auth-Token"] = token;
+                        }
+                        return origFetch(url, opts);
+                    };
+                }
+            } catch(e){}
+        })();
     </script>
 </body>
 </html>
@@ -1562,8 +1650,53 @@ DASHBOARD_HTML = """
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    ip = get_client_ip()
+    allowed, remaining, wait_sec = check_rate_limit(ip)
+    if not allowed:
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "locked": True,
+            "wait_sec": wait_sec,
+            "error": f"Çok fazla hatalı deneme! Lütfen {wait_sec} saniye bekleyin."
+        }), 429
+
+    data = request.get_json(silent=True) or request.form
+    pin = str(data.get("pin", "")).strip()
+
+    if pin == ADMIN_PIN:
+        record_successful_login(ip)
+        session["logged_in"] = True
+        session.permanent = True
+        token = get_auth_token()
+        return jsonify({
+            "ok": True,
+            "success": True,
+            "token": token,
+            "redirect": f"/?token={token}"
+        })
+    else:
+        rem, wait = record_failed_attempt(ip)
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "error": "Yanlış PIN kodu!",
+            "remaining": rem,
+            "locked": (rem == 0),
+            "wait_sec": wait
+        }), 401
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    req_token = request.args.get("token")
+    if session.get("logged_in") or (req_token and is_valid_token(req_token)):
+        session["logged_in"] = True
+        token = get_auth_token()
+        return redirect(f"/?token={token}")
+
     ip = get_client_ip()
     allowed, remaining, wait_sec = check_rate_limit(ip)
 
@@ -1578,11 +1711,13 @@ def login():
 
     error = None
     if request.method == "POST":
-        pin = request.form.get("pin", "")
+        pin = request.form.get("pin", "").strip()
         if pin == ADMIN_PIN:
             record_successful_login(ip)
             session["logged_in"] = True
-            return redirect(url_for("dashboard"))
+            session.permanent = True
+            token = get_auth_token()
+            return redirect(f"/?token={token}")
         else:
             rem, wait = record_failed_attempt(ip)
             if rem == 0:
