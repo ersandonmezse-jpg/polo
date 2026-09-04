@@ -48,6 +48,8 @@ from data_store import (
     get_main_chat_id,
     get_today_summary,
     get_all_users,
+    restore_default_sheets,
+    wipe_all_system_data,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -1238,6 +1240,27 @@ DASHBOARD_HTML = """
             {% endfor %}
         </div>
 
+        {% if not sheets %}
+        <div class="card" style="text-align:center; padding:30px 20px; margin-top:15px;">
+            <div style="font-size:36px; margin-bottom:12px;">📋</div>
+            <div style="font-weight:700; font-size:16px; margin-bottom:6px;">Kayıtlı E-Tablo Bulunamadı</div>
+            <div style="color:var(--hint-color); font-size:13px; margin-bottom:16px;">
+                Sistemde aktif bir Google Sheets tablosu bulunmuyor. Varsayılan tabloyu yükleyebilir veya yeni link ekleyebilirsiniz.
+            </div>
+            <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+                <button type="button" class="submit-btn" onclick="restoreDefaultSheet()" style="width:auto; padding:8px 16px; font-size:12px;">
+                    ⚡ Varsayılan Tabloyu (zigiligo) Yükle
+                </button>
+                <button type="button" class="sm-btn toggle" onclick="openLinksModal()" style="width:auto; padding:8px 16px; font-size:12px;">
+                    ➕ Yeni Tablo Ekle
+                </button>
+                <button type="button" class="sm-btn del" onclick="wipeAllData()" style="width:auto; padding:8px 16px; font-size:12px; background:rgba(239,68,68,0.2); color:#f87171; border:1px solid rgba(239,68,68,0.4);">
+                    🗑️ Tüm Sistem Verilerini Sıfırla
+                </button>
+            </div>
+        </div>
+        {% endif %}
+
         <!-- Sheet Panels -->
         {% for sheet in sheets %}
         <div id="tab-{{ sheet.id }}" class="tab-panel {% if loop.first %}active{% endif %}">
@@ -1362,6 +1385,11 @@ DASHBOARD_HTML = """
                 <!-- Existing Sheets List -->
                 <div style="font-size:12px; font-weight:700; color:var(--hint-color); text-transform:uppercase;">Kayıtlı Linkler</div>
                 <div id="sheetsListContainer" style="display:flex; flex-direction:column; gap:8px;">
+                    {% if not all_sheets_raw %}
+                    <div style="font-size:12px; color:var(--hint-color); font-style:italic; padding:12px; background:var(--card-bg); border-radius:8px; text-align:center;">
+                        Henüz kayıtlı bir Google Sheets linki yok.
+                    </div>
+                    {% endif %}
                     {% for s in all_sheets_raw %}
                     <div class="sheet-item" id="sheet-item-{{ s.id }}">
                         <div class="sheet-item-top">
@@ -1384,6 +1412,15 @@ DASHBOARD_HTML = """
                         </div>
                     </div>
                     {% endfor %}
+                </div>
+
+                <div style="display:flex; flex-direction:column; gap:8px; margin-top:16px; padding-top:12px; border-top:1px solid var(--border-color);">
+                    <button type="button" class="submit-btn" onclick="restoreDefaultSheet()" style="background:#2563eb; font-size:12px; padding:8px 12px; text-align:center;">
+                        ⚡ Varsayılan Tabloyu (zigiligo) Geri Yükle
+                    </button>
+                    <button type="button" class="sm-btn del" onclick="wipeAllData()" style="font-size:12px; padding:8px 12px; text-align:center; background:rgba(239,68,68,0.2); color:#f87171; border:1px solid rgba(239,68,68,0.4); width:100%;">
+                        🗑️ Tüm Sistem Verilerini & Telegram Mesajlarını Sıfırla
+                    </button>
                 </div>
             </div>
         </div>
@@ -1574,7 +1611,7 @@ DASHBOARD_HTML = """
             const cards = list.getElementsByClassName("data-card");
             for (let card of cards) {
                 if (card.style.display !== "none") {
-                    const cb = card.querySelector(".row-cb-" + sheetId);
+                    const cb = card.querySelector(".row-cb-" + CSS.escape(sheetId)) || card.querySelector("input[type=checkbox]");
                     if (cb) cb.checked = masterCb.checked;
                 }
             }
@@ -1582,26 +1619,34 @@ DASHBOARD_HTML = """
         }
 
         function updateSelection(sheetId) {
-            const checkedBoxes = document.querySelectorAll(".row-cb-" + sheetId + ":checked");
-            const count = checkedBoxes.length;
-            const badge = document.getElementById("sel-badge-" + sheetId);
-            if (badge) badge.innerText = count + " seçildi";
-
             const list = document.getElementById("list-" + sheetId);
-            if (list) {
-                const visibleBoxes = Array.from(list.getElementsByClassName("data-card"))
-                    .filter(c => c.style.display !== "none")
-                    .map(c => c.querySelector(".row-cb-" + sheetId))
-                    .filter(Boolean);
-                const masterCb = document.getElementById("select-all-" + sheetId);
-                if (masterCb && visibleBoxes.length > 0) {
-                    masterCb.checked = (count === visibleBoxes.length);
+            if (!list) return;
+            const cards = Array.from(list.getElementsByClassName("data-card")).filter(c => c.style.display !== "none");
+            let checkedCount = 0;
+            let visibleCount = 0;
+            for (let card of cards) {
+                const cb = card.querySelector(".row-cb-" + CSS.escape(sheetId)) || card.querySelector("input[type=checkbox]");
+                if (cb) {
+                    visibleCount++;
+                    if (cb.checked) checkedCount++;
                 }
+            }
+            const badge = document.getElementById("sel-badge-" + sheetId);
+            if (badge) badge.innerText = checkedCount + " seçildi";
+
+            const masterCb = document.getElementById("select-all-" + sheetId);
+            if (masterCb && visibleCount > 0) {
+                masterCb.checked = (checkedCount === visibleCount);
             }
         }
 
         function bulkDeleteSelected(sheetId) {
-            const checkedBoxes = document.querySelectorAll(".row-cb-" + sheetId + ":checked");
+            const list = document.getElementById("list-" + sheetId);
+            if (!list) return;
+            const checkedBoxes = Array.from(list.getElementsByClassName("data-card"))
+                .map(c => c.querySelector(".row-cb-" + CSS.escape(sheetId)) || c.querySelector("input[type=checkbox]"))
+                .filter(cb => cb && cb.checked);
+
             if (checkedBoxes.length === 0) {
                 alert("Lütfen silmek için önce en az bir kayıt seçin.");
                 return;
@@ -1611,7 +1656,7 @@ DASHBOARD_HTML = """
                 return;
             }
 
-            const rowNums = Array.from(checkedBoxes).map(cb => parseInt(cb.value));
+            const rowNums = checkedBoxes.map(cb => parseInt(cb.value));
             fetch("/api/bulk-delete-records", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -1656,6 +1701,44 @@ DASHBOARD_HTML = """
                     setTimeout(() => location.reload(), 600);
                 } else {
                     alert("Hata: " + (data.error || "Temizlenemedi"));
+                }
+            })
+            .catch(err => alert("Bağlantı hatası: " + err));
+        }
+
+        function restoreDefaultSheet() {
+            if (!confirm("Varsayılan 'zigiligo' tablosu sisteme eklensin mi?")) return;
+            fetch("/api/restore-default-sheet", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.ok) {
+                    showToast(data.message || "Varsayılan tablo yüklendi!");
+                    triggerHaptic("success");
+                    setTimeout(() => location.reload(), 600);
+                } else {
+                    alert("Hata: " + (data.message || data.error));
+                }
+            })
+            .catch(err => alert("Bağlantı hatası: " + err));
+        }
+
+        function wipeAllData() {
+            if (!confirm("⚠️ DİKKAT: TÜM SİSTEMİ SIFIRLAMA ONAYI\n\nBu işlem:\n• Gruptaki tüm Telegram mesajlarını siler\n• Tüm müşteri verilerini, sayaçları ve durumları sıfırlar\n• Hafızayı tamamen temizler\n\nDevam etmek istediğinize emin misiniz?")) return;
+            fetch("/api/wipe-all-data", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" }
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.ok) {
+                    showToast(data.message || "Tüm veriler sıfırlandı!");
+                    triggerHaptic("success");
+                    setTimeout(() => location.reload(), 800);
+                } else {
+                    alert("Hata: " + (data.message || data.error));
                 }
             })
             .catch(err => alert("Bağlantı hatası: " + err));
@@ -2145,6 +2228,21 @@ def api_delete_group():
     if delete_group(chat_id):
         return jsonify({"ok": True})
     return jsonify({"ok": False, "error": "Grup silinemedi."}), 400
+
+
+@app.route("/api/restore-default-sheet", methods=["POST"])
+@login_required
+def api_restore_default_sheet():
+    success, msg = restore_default_sheets()
+    return jsonify({"ok": success, "message": msg})
+
+
+@app.route("/api/wipe-all-data", methods=["POST"])
+@login_required
+def api_wipe_all_data():
+    success, msg, cnt = wipe_all_system_data(delete_sheets=False, delete_telegram=True)
+    return jsonify({"ok": success, "message": msg, "count": cnt})
+
 
 
 # ── Otomatik Arka Plan Bot Yöneticisi (Gunicorn & Standalone Uyumlu) ─────────

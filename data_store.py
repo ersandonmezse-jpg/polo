@@ -730,21 +730,26 @@ def add_sheet(name: str, url: str, chat_id: str = "") -> tuple[bool, str]:
 
 def delete_sheet(sheet_id: str) -> bool:
     with STORE_LOCK:
-        if not os.path.exists(SHEETS_FILE):
-            return False
+        resolved_id = resolve_sheet_id(sheet_id) or sheet_id
         try:
-            with open(SHEETS_FILE, "r", encoding="utf-8") as f:
-                sheets = json.load(f)
-            target_sheet = next((s for s in sheets if s.get("id") == sheet_id), None)
-            sheets = [s for s in sheets if s.get("id") != sheet_id]
-            save_sheets_unlocked(sheets)
+            target_sheet = None
+            if os.path.exists(SHEETS_FILE):
+                try:
+                    with open(SHEETS_FILE, "r", encoding="utf-8") as f:
+                        sheets = json.load(f)
+                    if isinstance(sheets, list):
+                        target_sheet = next((s for s in sheets if s.get("id") in [sheet_id, resolved_id]), None)
+                        sheets = [s for s in sheets if s.get("id") not in [sheet_id, resolved_id]]
+                        save_sheets_unlocked(sheets)
+                except Exception as e:
+                    logger.error(f"SHEETS_FILE okuma/kaydetme hatası: {e}")
 
             # State dosyasından da bu sheet'i ve kayıtlı tüm verilerini tamamen temizle
             try:
                 if os.path.exists(STATE_FILE):
                     with open(STATE_FILE, "r", encoding="utf-8") as f:
                         st = json.load(f)
-                    sheet_data = st.pop(sheet_id, None)
+                    sheet_data = st.pop(resolved_id, None) or st.pop(sheet_id, None)
                     with open(STATE_FILE, "w", encoding="utf-8") as f:
                         json.dump(st, f, ensure_ascii=False, indent=2)
 
@@ -768,13 +773,28 @@ def delete_sheet(sheet_id: str) -> bool:
             except Exception as e:
                 logger.error(f"State temizleme hatası: {e}")
 
+            # clients_db.json dosyasından da bu sheet'e ait kayıtları temizle
+            try:
+                if os.path.exists(CLIENTS_FILE):
+                    with open(CLIENTS_FILE, "r", encoding="utf-8") as cf:
+                        clients = json.load(cf)
+                    if isinstance(clients, dict):
+                        new_clients = {
+                            k: v for k, v in clients.items()
+                            if isinstance(v, dict) and v.get("sheet_id") not in [sheet_id, resolved_id]
+                        }
+                        with open(CLIENTS_FILE, "w", encoding="utf-8") as cf:
+                            json.dump(new_clients, cf, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.error(f"Clients temizleme hatası: {e}")
+
             # short_sheets.json dosyasından da temizle
             try:
                 short_file = os.path.join(DATA_DIR, "short_sheets.json")
                 if os.path.exists(short_file):
                     with open(short_file, "r", encoding="utf-8") as sf:
                         s_map = json.load(sf)
-                    new_map = {k: v for k, v in s_map.items() if k != sheet_id and v != sheet_id}
+                    new_map = {k: v for k, v in s_map.items() if k not in [sheet_id, resolved_id] and v not in [sheet_id, resolved_id]}
                     with open(short_file, "w", encoding="utf-8") as sf:
                         json.dump(new_map, sf, ensure_ascii=False, indent=2)
             except Exception:
@@ -1128,6 +1148,8 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
         state = load_state()
         sheet_st = state.get(sheet_id)
         if not sheet_st:
+            if delete_all:
+                return True, "Tabloda zaten silinecek kayıt yok.", 0
             return False, "Tablo state bilgisi bulunamadı.", 0
 
         # Sheet chat_id'sini belirle
@@ -1176,12 +1198,32 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
 
         # State güncellemesi
         if delete_all:
+            for r_num in target_rows:
+                if r_num not in deleted_list:
+                    deleted_list.append(r_num)
+            max_idx = max(target_rows + [sheet_st.get("last_sent", 0), 200])
+            for r in range(max_idx + 1):
+                if r not in deleted_list:
+                    deleted_list.append(r)
+
+            try:
+                if os.path.exists(CLIENTS_FILE):
+                    with open(CLIENTS_FILE, "r", encoding="utf-8") as cf:
+                        clients = json.load(cf)
+                    if isinstance(clients, dict):
+                        new_clients = {
+                            k: v for k, v in clients.items()
+                            if isinstance(v, dict) and v.get("sheet_id") != sheet_id
+                        }
+                        with open(CLIENTS_FILE, "w", encoding="utf-8") as cf:
+                            json.dump(new_clients, cf, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.error(f"bulk_delete_records clients temizleme hatası: {e}")
+
             sheet_st["messages"] = {}
             sheet_st["statuses"] = {}
             sheet_st["clients"] = {}
             sheet_st["global_ids"] = {}
-            sheet_st["deleted"] = []
-            sheet_st["last_sent"] = 0
             count_deleted = len(target_rows)
         else:
             count_deleted = 0
@@ -1196,6 +1238,132 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
 
         save_state(state)
         return True, f"{count_deleted} adet kayıt başarıyla silindi.", count_deleted
+
+
+def restore_default_sheets() -> tuple[bool, str]:
+    """Varsayılan Google Sheets tablosunu (zigiligo) sheets_config.json'a yeniden ekler."""
+    with STORE_LOCK:
+        try:
+            sheets = []
+            if os.path.exists(SHEETS_FILE):
+                try:
+                    with open(SHEETS_FILE, "r", encoding="utf-8") as f:
+                        sheets = json.load(f)
+                        if not isinstance(sheets, list):
+                            sheets = []
+                except Exception:
+                    sheets = []
+
+            added_any = False
+            for ds in DEFAULT_SHEETS:
+                sid = extract_sheet_id(ds["url"])
+                if not any(s.get("id") == sid for s in sheets):
+                    sheets.append({
+                        "id": sid,
+                        "name": ds.get("name") or fetch_google_sheet_title(sid) or "zigiligo",
+                        "url": ds["url"],
+                        "chat_id": str(ds.get("chat_id") or get_main_chat_id()),
+                        "active": True,
+                        "status": "Aktif",
+                        "last_check": "—",
+                        "count": 0,
+                    })
+                    added_any = True
+
+            save_sheets_unlocked(sheets)
+            if added_any:
+                return True, "Varsayılan 'zigiligo' tablosu başarıyla yüklendi."
+            return True, "Varsayılan tablo zaten kayıtlı."
+        except Exception as e:
+            logger.error(f"restore_default_sheets hatası: {e}")
+            return False, f"Hata: {str(e)}"
+
+
+def wipe_all_system_data(delete_sheets: bool = False, delete_telegram: bool = True) -> tuple[bool, str, int]:
+    """
+    Sistemdeki tüm kayıt geçmişini (sheets_state.json, clients_db.json, activity_log.json) sıfırlar.
+    İsteğe bağlı olarak Telegram grubundaki tüm mesajları siler ve kayıtlı sheet listesini de temizler.
+    """
+    with STORE_LOCK:
+        deleted_count = 0
+        try:
+            # 1. Telegram mesajlarını tespit et ve sil
+            messages_to_delete = []
+            if os.path.exists(STATE_FILE):
+                try:
+                    with open(STATE_FILE, "r", encoding="utf-8") as f:
+                        st = json.load(f)
+
+                    sheets_cfg = []
+                    if os.path.exists(SHEETS_FILE):
+                        try:
+                            with open(SHEETS_FILE, "r", encoding="utf-8") as sf:
+                                sheets_cfg = json.load(sf)
+                        except Exception:
+                            pass
+
+                    sheet_chat_map = {s.get("id"): s.get("chat_id") for s in sheets_cfg if isinstance(s, dict)}
+                    fallback_chat = get_main_chat_id() or TELEGRAM_CHAT_ID
+
+                    for sid, s_val in st.items():
+                        if isinstance(s_val, dict) and "messages" in s_val:
+                            chat_for_sheet = sheet_chat_map.get(sid) or fallback_chat
+                            for mid in s_val["messages"].values():
+                                messages_to_delete.append((chat_for_sheet, mid))
+                except Exception as e:
+                    logger.error(f"Mesaj listesi alma hatası: {e}")
+
+            if delete_telegram and messages_to_delete and TELEGRAM_BOT_TOKEN:
+                deleted_count = len(messages_to_delete)
+                def _batch_wipe(m_list):
+                    for cid, mid in m_list:
+                        try:
+                            requests.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteMessage",
+                                json={"chat_id": cid, "message_id": mid},
+                                timeout=5
+                            )
+                            time.sleep(0.04)
+                        except Exception:
+                            pass
+                threading.Thread(target=_batch_wipe, args=(messages_to_delete,), daemon=True).start()
+
+            # 2. sheets_state.json dosyasını sıfırla
+            atomic_save_json(STATE_FILE, {"__global_lead_counter__": 0})
+
+            # 3. clients_db.json dosyasını sıfırla
+            atomic_save_json(CLIENTS_FILE, {})
+
+            # 4. activity_log.json dosyasını sıfırla
+            atomic_save_json(ACTIVITY_LOG_FILE, [])
+
+            # 5. short_sheets.json dosyasını sıfırla
+            short_file = os.path.join(DATA_DIR, "short_sheets.json")
+            if os.path.exists(short_file):
+                atomic_save_json(short_file, {})
+
+            # 6. Eğer delete_sheets=True ise sheets_config.json'u da temizle
+            if delete_sheets:
+                atomic_save_json(SHEETS_FILE, [])
+            else:
+                # Sheetlerin count ve last_check alanlarını sıfırla
+                if os.path.exists(SHEETS_FILE):
+                    try:
+                        with open(SHEETS_FILE, "r", encoding="utf-8") as f:
+                            s_list = json.load(f)
+                        if isinstance(s_list, list):
+                            for s in s_list:
+                                if isinstance(s, dict):
+                                    s["count"] = 0
+                                    s["last_check"] = "—"
+                            save_sheets_unlocked(s_list)
+                    except Exception:
+                        pass
+
+            return True, f"Tüm sistem verileri sıfırlandı ({deleted_count} Telegram mesajı silindi).", deleted_count
+        except Exception as e:
+            logger.error(f"wipe_all_system_data hatası: {e}")
+            return False, f"Hata: {str(e)}", 0
 
 
 # ── Brute-Force Rate Limiting (PIN Girişi) ───────────────────────────────────
