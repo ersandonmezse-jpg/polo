@@ -44,6 +44,7 @@ from data_store import (
     get_sheets,
     add_sheet,
     get_last_sent,
+    reset_sheet_last_sent,
     record_message_sent,
     update_sheet_meta,
     extract_sheet_id,
@@ -1206,10 +1207,12 @@ def listen_telegram_updates():
                             "• <code>/link [Google Sheets Linki]</code>\n"
                             "  ↳ <i>Yeni bir Google E-Tablo linkini bota ekler. Bot yeni satırları otomatik çeker.</i>\n\n"
                             "📊 <b>Genel & Durum Komutları:</b>\n"
+                            "• <code>/aktar</code> veya <code>/gonder</code>\n"
+                            "  ↳ <i>Kayıtlı e-tablolardaki verileri sıfırlayıp gruba etkileşim butonlarıyla aktarır.</i>\n\n"
                             "• <code>/durum</code>\n"
                             "  ↳ <i>Aktif sheetleri, saha grubunu, kayıtlı sahacıları ve hedef grupları listeler.</i>\n\n"
                             "• <code>/panel</code>\n"
-                            "  ↳ <i>Web Admin panelinin giriş linkini açar.</i>\n\n"
+                            "  ↳ <i>Telegram içi Mini App panelini açar (Dış web sitesine yönlendirmez).</i>\n\n"
                             "• <code>/start</code>\n"
                             "  ↳ <i>Botu başlatır ve temel menüyü gösterir.</i>\n"
                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1222,7 +1225,7 @@ def listen_telegram_updates():
                         )
                         markup = None
                         if PUBLIC_URL:
-                            markup = {"inline_keyboard": [[{"text": "📊 Web Paneli Aç", "url": PUBLIC_URL}]]}
+                            markup = {"inline_keyboard": [[{"text": "📊 Mini App Paneli Aç", "web_app": {"url": PUBLIC_URL}}]]}
                         send_telegram_message(help_text, chat_id=from_chat_id, reply_markup=markup)
                         continue
 
@@ -1231,18 +1234,19 @@ def listen_telegram_updates():
                         welcome_text = (
                             "👋 <b>Google Sheets Saha & Finans Botu Aktif!</b>\n\n"
                             "Komutlar:\n"
+                            "• <code>/aktar</code> - Tablodaki verileri gruba aktarır\n"
+                            "• <code>/link &lt;Link&gt;</code> - Yeni Google Sheets ekler/günceller\n"
                             "• <code>/saha_grubu</code> - Bulunulan grubu Saha Grubu yapar\n"
                             "• <code>/sahaci @kullaniciadi</code> - Sahacı listesine kullanıcı ekler\n"
                             "• <code>/sahaci_sil @kullaniciadi</code> - Sahacı listesinden çıkarır\n"
                             "• <code>/sahacilar</code> - Kayıtlı sahacıları listeler\n"
                             "• <code>/grup_ekle &lt;Grup Adı&gt;</code> - Grubu aktarım listesine ekler\n"
-                            "• <code>/link &lt;Link&gt;</code> - Yeni Google Sheets ekler\n"
                             "• <code>/durum</code> - Tüm grupları ve ayarları gösterir\n"
-                            "• <code>/panel</code> - Web paneli açar"
+                            "• <code>/panel</code> - Telegram içi Mini App panelini açar"
                         )
                         markup = None
                         if PUBLIC_URL:
-                            markup = {"inline_keyboard": [[{"text": "📊 Web Paneli Aç", "url": PUBLIC_URL}]]}
+                            markup = {"inline_keyboard": [[{"text": "📊 Mini App Paneli Aç", "web_app": {"url": PUBLIC_URL}}]]}
                         send_telegram_message(welcome_text, chat_id=from_chat_id, reply_markup=markup)
 
                     # /data_grubu veya /ana_grup Komutu (Ana gelen kutusu grubunu ayarlar)
@@ -1423,7 +1427,7 @@ def listen_telegram_updates():
                             reply = f"ℹ️ {resp_msg}"
                         send_telegram_message(reply, chat_id=from_chat_id)
 
-                    # /link Komutu
+                    # /link Komutu (Yeni Google Sheets Ekleme veya Güncelleme)
                     elif base_cmd == "/link" or cmd.startswith("/link") or "docs.google.com/spreadsheets" in text:
                         parts = text.split(maxsplit=1)
                         target_url = parts[1].strip() if len(parts) > 1 else text.strip()
@@ -1435,29 +1439,66 @@ def listen_telegram_updates():
                             success, msg_resp = add_sheet("", clean_url, chat_id=target_group)
 
                             if success:
-                                # Yeni eklenen sheet'in adını al
                                 s_id = extract_sheet_id(clean_url)
                                 added_sheet = next((s for s in get_sheets() if s.get("id") == s_id), None)
                                 sheet_name = added_sheet.get("name") if added_sheet else "E-Tablo"
-
-                                # Hemen yeni eklenen sheet'i tara ve gönder!
-                                try:
-                                    threading.Thread(target=check_and_send_sheet, args=({"name": sheet_name, "url": clean_url, "id": s_id, "chat_id": target_group},), daemon=True).start()
-                                except Exception:
-                                    pass
 
                                 reply_msg = (
                                     f"✅ <b>Google Sheets Başarıyla Eklendi!</b>\n\n"
                                     f"📝 <b>Tablo Adı:</b> <b>{html.escape(sheet_name)}</b>\n"
                                     f"🎯 <b>Hedef Grup:</b> <code>{target_group}</code>\n"
                                     f"🔗 <b>Link:</b> {clean_url}\n\n"
-                                    f"Kayıtlar <code>{target_group}</code> grubuna etkileşim butonlarıyla aktarılıyor..."
+                                    f"🚀 Kayıtlar <code>{target_group}</code> grubuna etkileşim butonlarıyla aktarılıyor..."
                                 )
+                                send_telegram_message(reply_msg, chat_id=from_chat_id)
+
+                                # Hemen sheet'i tara ve tüm kayıtları zorunlu olarak gruba aktar!
+                                try:
+                                    threading.Thread(
+                                        target=check_and_send_sheet,
+                                        args=({"name": sheet_name, "url": clean_url, "id": s_id, "chat_id": target_group}, True),
+                                        daemon=True
+                                    ).start()
+                                except Exception as e:
+                                    logger.error(f"check_and_send_sheet thread error: {e}")
                             else:
-                                reply_msg = f"ℹ️ {msg_resp}"
+                                send_telegram_message(f"ℹ️ {msg_resp}", chat_id=from_chat_id)
                         else:
-                            reply_msg = "⚠️ <b>Geçerli bir link bulunamadı!</b>\nKullanım: <code>/link https://docs.google.com/...</code>"
-                        send_telegram_message(reply_msg, chat_id=from_chat_id)
+                            send_telegram_message("⚠️ <b>Geçerli bir link bulunamadı!</b>\nKullanım: <code>/link https://docs.google.com/...</code>", chat_id=from_chat_id)
+
+                    # /aktar veya /gonder Komutu (Kayıtları Gruba Manuel Aktar)
+                    elif base_cmd in ["/aktar", "/gonder", "/yenile", "/sync"]:
+                        sheets = get_sheets()
+                        active_sheets = [s for s in sheets if s.get("active", True)]
+                        if not active_sheets:
+                            send_telegram_message("⚠️ Aktarılacak kayıtlı bir e-tablo bulunamadı. Lütfen <code>/link [Google Sheets Linki]</code> ile tablo ekleyin.", chat_id=from_chat_id)
+                        else:
+                            target_group = str(from_chat_id) if str(from_chat_id).startswith("-") else get_main_chat_id()
+                            send_telegram_message(f"🚀 <b>Aktarım Başlatıldı!</b>\n\nKayıtlı e-tablolardaki tüm veriler <code>{target_group}</code> grubuna etkileşim butonlarıyla aktarılıyor...", chat_id=from_chat_id)
+                            for s in active_sheets:
+                                s_cfg = dict(s)
+                                s_cfg["chat_id"] = target_group
+                                reset_sheet_last_sent(s["id"])
+                                threading.Thread(
+                                    target=check_and_send_sheet,
+                                    args=(s_cfg, True),
+                                    daemon=True
+                                ).start()
+
+                    # /sifirla Komutu (Aktarım sayaçlarını sıfırla)
+                    elif base_cmd in ["/sifirla", "/reset"]:
+                        reset_sheet_last_sent()
+                        target_group = str(from_chat_id) if str(from_chat_id).startswith("-") else get_main_chat_id()
+                        send_telegram_message(f"🔄 <b>Aktarım sayaçları sıfırlandı!</b>\nTüm kayıtlar <code>{target_group}</code> grubuna baştan aktarılıyor...", chat_id=from_chat_id)
+                        for s in get_sheets():
+                            if s.get("active", True):
+                                s_cfg = dict(s)
+                                s_cfg["chat_id"] = target_group
+                                threading.Thread(
+                                    target=check_and_send_sheet,
+                                    args=(s_cfg, True),
+                                    daemon=True
+                                ).start()
 
                     # /durum Komutu
                     elif cmd.startswith("/durum"):
@@ -1481,13 +1522,13 @@ def listen_telegram_updates():
 
                         send_telegram_message("\n".join(lines), chat_id=from_chat_id)
 
-                    # /panel Komutu
+                    # /panel Komutu (Telegram Mini App - Dış browser yok)
                     elif cmd.startswith("/panel"):
                         if PUBLIC_URL:
-                            markup = {"inline_keyboard": [[{"text": "📊 Paneli Aç", "url": PUBLIC_URL}]]}
-                            send_telegram_message("Aşağıdaki butona tıklayarak web panele giriş yapabilirsiniz:", chat_id=from_chat_id, reply_markup=markup)
+                            markup = {"inline_keyboard": [[{"text": "📊 Mini App Paneli Aç", "web_app": {"url": PUBLIC_URL}}]]}
+                            send_telegram_message("📱 <b>Telegram Mini App Paneli:</b>\n\nAşağıdaki butona dokunarak paneli doğrudan Telegram içinde açabilirsiniz:", chat_id=from_chat_id, reply_markup=markup)
                         else:
-                            send_telegram_message("Panel adresi henüz ayarlanmamış.", chat_id=from_chat_id)
+                            send_telegram_message("Telegram Mini App adresi henüz ayarlanmamış.", chat_id=from_chat_id)
 
         except Exception as e:
             logger.error(f"Update dinleme hatası: {e}", exc_info=True)
@@ -1496,24 +1537,30 @@ def listen_telegram_updates():
 
 # ── Sheet Kontrol Döngüsü ───────────────────────────────────────────────────
 
-def check_and_send_sheet(sheet_config: dict):
-    sheet_name = sheet_config["name"]
-    sheet_url = sheet_config["url"]
+def check_and_send_sheet(sheet_config: dict, force_resend: bool = False):
+    sheet_name = sheet_config.get("name", "E-Tablo")
+    sheet_url = sheet_config.get("url", "")
     sheet_id = sheet_config.get("id") or extract_sheet_id(sheet_url)
 
-    logger.info(f"── Sheet kontrol ediliyor: {sheet_name} ──")
+    logger.info(f"── Sheet kontrol ediliyor: {sheet_name} (force_resend={force_resend}) ──")
+
+    target_chat = str(sheet_config.get("chat_id") or get_main_chat_id() or TELEGRAM_CHAT_ID or "-5529859923")
 
     try:
         rows = fetch_sheet_data(sheet_id)
     except Exception as e:
         logger.error(f"[{sheet_name}] Veri çekilemedi: {e}")
         update_sheet_meta(sheet_id, 0, f"Hata: {str(e)[:35]}")
+        if force_resend:
+            send_telegram_message(f"⚠️ <b>{html.escape(sheet_name)}</b> tablosuna erişilemedi: {html.escape(str(e))}", chat_id=target_chat)
         return
 
     total_rows = len(rows)
     update_sheet_meta(sheet_id, total_rows, "Aktif")
 
     if not rows:
+        if force_resend:
+            send_telegram_message(f"ℹ️ <b>{html.escape(sheet_name)}</b> tablosunda satır bulunamadı (Tablo boş).", chat_id=target_chat)
         return
 
     headers = list(rows[0].keys())
@@ -1522,17 +1569,27 @@ def check_and_send_sheet(sheet_config: dict):
     if not col_mapping:
         logger.error(f"[{sheet_name}] Hedef kolon bulunamadı!")
         update_sheet_meta(sheet_id, total_rows, "Kolon hatası")
+        if force_resend:
+            send_telegram_message(f"⚠️ <b>{html.escape(sheet_name)}</b> tablosunda gerekli kolonlar (Telefon, T.C. vb.) bulunamadı.", chat_id=target_chat)
         return
 
-    last_sent = get_last_sent(sheet_id)
-    if last_sent >= total_rows:
+    last_sent = 0 if force_resend else get_last_sent(sheet_id)
+    if not force_resend and last_sent >= total_rows:
         return
 
-    new_rows = rows[last_sent:]
-    logger.info(f"[{sheet_name}] {len(new_rows)} yeni satır bulundu. Butonlu gönderiliyor...")
+    new_rows = rows[last_sent:] if not force_resend else rows
+    start_idx = 0 if force_resend else last_sent
 
+    if not new_rows:
+        if force_resend:
+            send_telegram_message(f"ℹ️ <b>{html.escape(sheet_name)}</b> tablosundaki tüm kayıtlar ({total_rows}/{total_rows}) zaten aktarılmış durumda.", chat_id=target_chat)
+        return
+
+    logger.info(f"[{sheet_name}] {len(new_rows)} satır {target_chat} grubuna gönderiliyor...")
+
+    sent_count = 0
     for i, row in enumerate(new_rows):
-        entry_number = last_sent + i
+        entry_number = start_idx + i
         global_lead_id = get_next_global_id()
 
         message = format_message(global_lead_id, row, col_mapping, sheet_name)
@@ -1541,14 +1598,21 @@ def check_and_send_sheet(sheet_config: dict):
         phone = row.get(col_mapping.get("phone_number", ""), "")
         tc_no = row.get(col_mapping.get("t.c_numaranız", ""), "")
 
-        target_chat = str(sheet_config.get("chat_id") or get_main_chat_id() or TELEGRAM_CHAT_ID or "-5529859923")
         success, msg_id = send_telegram_message(message, chat_id=target_chat, reply_markup=keyboard)
         if success:
             record_message_sent(sheet_id, entry_number, msg_id or 0, phone=phone, tc_no=tc_no, global_id=global_lead_id)
-            time.sleep(2)
+            sent_count += 1
+            time.sleep(1)
         else:
-            logger.error(f"[{sheet_name}] Satır #{entry_number} gönderilemedi.")
+            logger.error(f"[{sheet_name}] Satır #{entry_number} {target_chat} grubuna gönderilemedi.")
             break
+
+    if sent_count > 0:
+        logger.info(f"[{sheet_name}] {sent_count} adet kayıt {target_chat} grubuna başarıyla aktarıldı.")
+        send_telegram_message(
+            f"✅ <b>{html.escape(sheet_name)}</b> tablosundan <b>{sent_count} adet kayıt</b> <code>{target_chat}</code> grubuna başarıyla aktarıldı!",
+            chat_id=target_chat
+        )
 
 
 def check_all_sheets():

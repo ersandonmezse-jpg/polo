@@ -480,17 +480,14 @@ def add_sheet(name: str, url: str, chat_id: str = "") -> tuple[bool, str]:
         for s in sheets:
             if s.get("id") == sheet_id:
                 # İsim ve hedef grup güncellenmek isteniyorsa güncelle
-                updated = False
                 if auto_title and (s.get("name", "").startswith("Form ") or not s.get("name")):
                     s["name"] = auto_title
-                    updated = True
-                if chat_id and s.get("chat_id") != target_group:
+                if target_group:
                     s["chat_id"] = target_group
-                    updated = True
-                if updated:
-                    save_sheets_unlocked(sheets)
-                    return True, f"Tablo güncellendi: '{s.get('name')}' (Hedef Grup: {target_group})"
-                return False, f"Bu Google Sheets zaten ekli! ({s.get('name')})"
+                s["active"] = True
+                save_sheets_unlocked(sheets)
+                reset_sheet_last_sent(sheet_id)
+                return True, f"Tablo hazırlandı: '{s.get('name')}' (Hedef Grup: {target_group})"
 
         # Kullanıcı özel isim girmediyse ya da 'Form' kaldıysa otomatik tablo başlığını kullan
         user_name = (name or "").strip()
@@ -666,6 +663,21 @@ def save_state(state: dict):
 def get_last_sent(sheet_id: str) -> int:
     state = load_state()
     return state.get(sheet_id, {}).get("last_sent", 0)
+
+
+def reset_sheet_last_sent(sheet_id: str = ""):
+    """Belirtilen sheet'in (veya tüm sheet'lerin) last_sent sayacını sıfırlar."""
+    with STORE_LOCK:
+        state = load_state()
+        if sheet_id:
+            if sheet_id in state and isinstance(state[sheet_id], dict):
+                state[sheet_id]["last_sent"] = 0
+        else:
+            for sid in state:
+                if isinstance(state[sid], dict) and "last_sent" in state[sid]:
+                    state[sid]["last_sent"] = 0
+        save_state(state)
+
 
 
 def get_next_global_id() -> int:

@@ -78,7 +78,9 @@ def set_bot_commands():
     payload = {
         "commands": [
             {"command": "help", "description": "Tum komutlari ve kilavuzu goster"},
-            {"command": "panel", "description": "Web Admin panelini ac"},
+            {"command": "aktar", "description": "Kayıtları gruba butonlarla aktar"},
+            {"command": "link", "description": "Google Sheets linki ekle/guncelle"},
+            {"command": "panel", "description": "Telegram Mini App panelini ac"},
             {"command": "durum", "description": "Sistem ve sheet durumunu goster"},
             {"command": "data_grubu", "description": "Bu grubu ana data grubu yap"},
             {"command": "saha_grubu", "description": "Bu grubu saha grubu yap"},
@@ -97,19 +99,19 @@ def set_bot_commands():
 
 
 def send_panel_link(web_app_url: str):
-    """Gruba panel linkini gonderir."""
+    """Gruba Mini App panel butonunu gonderir."""
     api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": "🌐 <b>Admin Panel Aktif!</b>\n\n"
-                "Asagidaki butona tiklayarak paneli acabilirsiniz.",
+        "text": "📱 <b>Telegram Mini App Aktif!</b>\n\n"
+                "Aşağıdaki butona dokunarak paneli doğrudan Telegram içinde açabilirsiniz.",
         "parse_mode": "HTML",
         "reply_markup": {
             "inline_keyboard": [[
                 {
-                    "text": "📊 Paneli Ac",
-                    "url": web_app_url
+                    "text": "📊 Mini App Paneli Aç",
+                    "web_app": {"url": web_app_url}
                 }
             ]]
         }
@@ -124,6 +126,7 @@ def send_panel_link(web_app_url: str):
             logger.warning(f"Panel linki gonderilemedi: {data}")
     except Exception as e:
         logger.warning(f"Panel linki gonderilemedi: {e}")
+
 
 
 def run_bot():
