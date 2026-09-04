@@ -139,7 +139,14 @@ def find_column_mapping(headers: list[str]) -> dict[str, str]:
 
     # 2. Telefon Numarası
     for h, norm in normalized:
-        if any(k in norm for k in ["telefon", "phone", "gsm", "mobile"]) or norm == "tel":
+        if (
+            any(k in norm for k in ["telefon", "phone", "gsm", "mobile", "cep", "iletisim", "contact"])
+            or "tel" in norm.split("_")
+            or norm.startswith("tel")
+            or norm.endswith("tel")
+            or norm in ["tel", "telno", "tel_no"]
+            or ("numara" in norm and not any(skip in norm for skip in ["tc", "kimlik", "id", "hesap", "kart", "iban"]))
+        ):
             mapping["phone_number"] = h
             break
 
@@ -162,6 +169,52 @@ def find_column_mapping(headers: list[str]) -> dict[str, str]:
             break
 
     return mapping
+
+
+def extract_phone_from_row(row: dict, col_mapping: dict = None) -> str:
+    """Satırdan telefon numarasını parametre uyuşmasa bile tam ve olduğu gibi çeker."""
+    if not row:
+        return ""
+
+    raw_phone = ""
+    # 1. Eşleşen kolondan çek
+    if col_mapping and col_mapping.get("phone_number") and col_mapping["phone_number"] in row:
+        val = str(row[col_mapping["phone_number"]] or "").strip()
+        if val and val != "—" and val != "-":
+            raw_phone = val
+
+    # 2. Dinamik kolon taraması (başlıkta tel, phone, gsm, cep, iletisim, contact geçen kolonlar)
+    if not raw_phone:
+        for k, v in row.items():
+            if not k:
+                continue
+            k_norm = normalize_tr(str(k))
+            if (
+                any(term in k_norm for term in ["telefon", "phone", "gsm", "mobile", "cep", "iletisim", "contact"])
+                or "tel" in k_norm.split("_")
+                or k_norm.startswith("tel")
+                or k_norm.endswith("tel")
+                or k_norm in ["tel", "telno", "tel_no"]
+                or ("numara" in k_norm and not any(skip in k_norm for skip in ["tc", "kimlik", "id", "hesap", "kart", "iban"]))
+            ):
+                val = str(v or "").strip()
+                if val and val != "—" and val != "-":
+                    raw_phone = val
+                    break
+
+    # 3. Veri deseni taraması (değer p:+, +90, 05 veya telefon formatı içeriyorsa)
+    if not raw_phone:
+        for k, v in row.items():
+            val = str(v or "").strip()
+            if val.startswith("p:+") or val.startswith("+90") or (val.startswith("05") and len(val) >= 10):
+                raw_phone = val
+                break
+
+    # Varsa teknik Meta Lead Ads ön eki olan 'p:' temizlenir, numara olduğu gibi korunur
+    if raw_phone.startswith("p:"):
+        raw_phone = raw_phone[2:].strip()
+
+    return raw_phone
 
 
 def convert_to_turkey_time(time_str: str) -> str:
@@ -1821,11 +1874,8 @@ def dashboard():
                         diff = max(0, time.time() - fwd_ev.get("fwd_timestamp", time.time()))
                         stay_dur = format_duration(diff)
 
-                    global_id = get_record_global_id(sheet_id, i)
-
-                    raw_phone = str(row.get(col_mapping.get("phone_number", ""), "") or "").strip()
-                    if raw_phone.startswith("p:"):
-                        raw_phone = raw_phone[2:]
+                    global_id = get_record_global_id(sheet_id, i) or (i + 1)
+                    raw_phone = extract_phone_from_row(row, col_mapping)
 
                     sheet_info["rows"].append({
                         "num": global_id,

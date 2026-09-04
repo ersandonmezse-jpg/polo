@@ -150,7 +150,14 @@ def find_column_mapping(headers: list[str]) -> dict[str, str]:
 
     # 2. Telefon Numarası
     for h, norm in normalized:
-        if any(k in norm for k in ["telefon", "phone", "gsm", "mobile"]) or norm == "tel":
+        if (
+            any(k in norm for k in ["telefon", "phone", "gsm", "mobile", "cep", "iletisim", "contact"])
+            or "tel" in norm.split("_")
+            or norm.startswith("tel")
+            or norm.endswith("tel")
+            or norm in ["tel", "telno", "tel_no"]
+            or ("numara" in norm and not any(skip in norm for skip in ["tc", "kimlik", "id", "hesap", "kart", "iban"]))
+        ):
             mapping["phone_number"] = h
             break
 
@@ -173,6 +180,52 @@ def find_column_mapping(headers: list[str]) -> dict[str, str]:
             break
 
     return mapping
+
+
+def extract_phone_from_row(row: dict, col_mapping: dict = None) -> str:
+    """Satırdan telefon numarasını parametre uyuşmasa bile tam ve olduğu gibi çeker."""
+    if not row:
+        return ""
+
+    raw_phone = ""
+    # 1. Eşleşen kolondan çek
+    if col_mapping and col_mapping.get("phone_number") and col_mapping["phone_number"] in row:
+        val = str(row[col_mapping["phone_number"]] or "").strip()
+        if val and val != "—" and val != "-":
+            raw_phone = val
+
+    # 2. Dinamik kolon taraması (başlıkta tel, phone, gsm, cep, iletisim, contact geçen kolonlar)
+    if not raw_phone:
+        for k, v in row.items():
+            if not k:
+                continue
+            k_norm = normalize_tr(str(k))
+            if (
+                any(term in k_norm for term in ["telefon", "phone", "gsm", "mobile", "cep", "iletisim", "contact"])
+                or "tel" in k_norm.split("_")
+                or k_norm.startswith("tel")
+                or k_norm.endswith("tel")
+                or k_norm in ["tel", "telno", "tel_no"]
+                or ("numara" in k_norm and not any(skip in k_norm for skip in ["tc", "kimlik", "id", "hesap", "kart", "iban"]))
+            ):
+                val = str(v or "").strip()
+                if val and val != "—" and val != "-":
+                    raw_phone = val
+                    break
+
+    # 3. Veri deseni taraması (değer p:+, +90, 05 veya telefon formatı içeriyorsa)
+    if not raw_phone:
+        for k, v in row.items():
+            val = str(v or "").strip()
+            if val.startswith("p:+") or val.startswith("+90") or (val.startswith("05") and len(val) >= 10):
+                raw_phone = val
+                break
+
+    # Varsa teknik Meta Lead Ads ön eki olan 'p:' temizlenir, numara olduğu gibi korunur
+    if raw_phone.startswith("p:"):
+        raw_phone = raw_phone[2:].strip()
+
+    return raw_phone
 
 
 def convert_to_turkey_time(time_str: str) -> str:
@@ -213,10 +266,9 @@ def format_message(entry_number: int, row: dict, col_mapping: dict, sheet_name: 
     calisma_durumu = html.escape(row.get(col_mapping.get("çalışma_durumu", ""), "—"))
     tc_no = html.escape(row.get(col_mapping.get("t.c_numaranız", ""), "—"))
     kart_limit = html.escape(row.get(col_mapping.get("kullanılabilir_kart_limitiniz", ""), "—"))
-    # Telefon numarasını temizle (varsa p: ön ekini kaldır) ve tam açık göster
-    raw_phone = str(row.get(col_mapping.get("phone_number", ""), "") or "").strip()
-    if raw_phone.startswith("p:"):
-        raw_phone = raw_phone[2:]
+
+    # Telefon numarasını olduğu gibi çek (parametre uyuşmasa bile dinamik taramayla yakala)
+    raw_phone = extract_phone_from_row(row, col_mapping)
     phone = html.escape(raw_phone) if raw_phone else "—"
 
     # MÜŞTERİ GEÇMİŞİ & MÜKERRER BAŞVURU KONTROLÜ
@@ -365,18 +417,22 @@ def send_telegram_message(text: str, chat_id: str = None, reply_markup: dict = N
             elif data.get("error_code") == 400:
                 desc = data.get("description", "").lower()
                 logger.warning(f"Telegram API 400 Hatası: {data.get('description')}")
-                if "entity" in desc or "tag" in desc or "parse" in desc:
-                    # HTML etiket hatası: parse_mode kaldır, butonları koruyarak tekrar dene
-                    payload.pop("parse_mode", None)
-                    res2 = requests.post(url, json=payload, timeout=15)
+                if "entity" in desc or "tag" in desc or "parse" in desc or "can't parse" in desc:
+                    # HTML etiket hatası: parse_mode kaldır, butonları kesinlikle KORU
+                    retry_payload = dict(payload)
+                    retry_payload.pop("parse_mode", None)
+                    clean_txt = re.sub(r"<[^>]+>", "", text)
+                    retry_payload["text"] = clean_txt
+                    res2 = requests.post(url, json=retry_payload, timeout=15)
                     d2 = res2.json()
                     if d2.get("ok"):
                         return True, d2.get("result", {}).get("message_id")
-                    logger.error(f"Telegram API hatası (parse_mode kaldırılmış deneme): {d2}")
-                elif reply_markup:
-                    # Buton verisi hatası: butonsuz tekrar dene
-                    payload.pop("reply_markup", None)
-                    res2 = requests.post(url, json=payload, timeout=15)
+                    logger.error(f"Telegram API HTML temizleme denemesi: {d2}")
+                elif reply_markup and ("button" in desc or "markup" in desc or "reply_markup" in desc):
+                    # Yalnızca açıkça buton verisinde hata varsa butonsuz tekrar dene
+                    retry_payload = dict(payload)
+                    retry_payload.pop("reply_markup", None)
+                    res2 = requests.post(url, json=retry_payload, timeout=15)
                     d2 = res2.json()
                     if d2.get("ok"):
                         return True, d2.get("result", {}).get("message_id")
@@ -545,7 +601,7 @@ def listen_telegram_updates():
 
                         answer_callback_query(cq_id, "Lütfen eklemek istediğiniz notu mesaja yanıtlayarak veya doğrudan gruba yazın.", show_alert=True)
                         send_telegram_message(
-                            f"✍️ {user_tag}, <b>Kayıt #{row_num}</b> için notunuzu yazıp bu mesaja yanıtlayın:",
+                            f"✍️ {user_tag}, <b>Kayıt #{row_num + 1}</b> için notunuzu yazıp bu mesaja yanıtlayın:",
                             chat_id=chat_id,
                             reply_to_message_id=message_id
                         )
@@ -599,7 +655,7 @@ def listen_telegram_updates():
 
                         answer_callback_query(cq_id)
                         send_telegram_message(
-                            f"✍️ {user_tag}, <b>Kayıt #{row_num}</b> için onaylanan tutarı yazın (Örn: <code>35.000 TL</code>):",
+                            f"✍️ {user_tag}, <b>Kayıt #{row_num + 1}</b> için onaylanan tutarı yazın (Örn: <code>35.000 TL</code>):",
                             chat_id=chat_id,
                             reply_to_message_id=message_id
                         )
@@ -684,7 +740,7 @@ def listen_telegram_updates():
 
                         answer_callback_query(cq_id)
                         send_telegram_message(
-                            f"🏦 {user_tag}, lütfen <b>Kayıt #{row_num}</b> ({amount_str}) için <b>IBAN ve Alıcı Adı</b> yazıp gönderin:",
+                            f"🏦 {user_tag}, lütfen <b>Kayıt #{row_num + 1}</b> ({amount_str}) için <b>IBAN ve Alıcı Adı</b> yazıp gönderin:",
                             chat_id=chat_id,
                             reply_to_message_id=message_id
                         )
@@ -712,7 +768,7 @@ def listen_telegram_updates():
                         saha_chat_id = settings.get("saha_group_id")
                         if saha_chat_id:
                             send_telegram_message(
-                                f"⚠️ <b>Kayıt #{row_num}</b> için işlem kaçtı, sonrakine buradayız! 🤝",
+                                f"⚠️ <b>Kayıt #{row_num + 1}</b> için işlem kaçtı, sonrakine buradayız! 🤝",
                                 chat_id=saha_chat_id
                             )
 
@@ -764,7 +820,7 @@ def listen_telegram_updates():
                         })
                         answer_callback_query(cq_id)
                         send_telegram_message(
-                            f"✍️ {user_tag}, <b>Kayıt #{row_num}</b> için atılan net tutarı yazınız (Örn: <code>25.000 TL</code>):",
+                            f"✍️ {user_tag}, <b>Kayıt #{row_num + 1}</b> için atılan net tutarı yazınız (Örn: <code>25.000 TL</code>):",
                             chat_id=chat_id,
                             reply_to_message_id=message_id
                         )
@@ -804,7 +860,7 @@ def listen_telegram_updates():
                             send_telegram_message(
                                 f"🎯 <b>YENİ ATIŞ BİLGİSİ GELDİ!</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"📋 <b>Kayıt:</b> #{row_num}\n"
+                                f"📋 <b>Kayıt:</b> #{row_num + 1}\n"
                                 f"💰 <b>Atılan Tutar:</b> <code>{amt_str}</code>\n"
                                 f"👤 <b>Temsilci:</b> {html.escape(user_tag)}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -840,7 +896,7 @@ def listen_telegram_updates():
                         send_telegram_message(
                             f"🚫 <b>DİKKAT: İŞLEM / HESAP BLOKE OLDU!</b>\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📋 <b>Kayıt:</b> #{row_num}\n"
+                            f"📋 <b>Kayıt:</b> #{row_num + 1}\n"
                             f"💰 <b>Tutar:</b> {amt_str}\n"
                             f"👤 <b>İşaretleyen:</b> {html.escape(user_tag)}\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -877,7 +933,7 @@ def listen_telegram_updates():
 
                         # İLK GRUBA BİLGİ VER
                         send_telegram_message(
-                            f"⏳ <b>Kayıt #{row_num}</b> için tutar ({amt_str}) henüz hesaba düşmedi, bekleniyor. Hesaba düştüğünde saha ekibi onaylayacaktır.",
+                            f"⏳ <b>Kayıt #{row_num + 1}</b> için tutar ({amt_str}) henüz hesaba düşmedi, bekleniyor. Hesaba düştüğünde saha ekibi onaylayacaktır.",
                             chat_id=origin_chat_id,
                             reply_to_message_id=origin_msg_id
                         )
@@ -915,7 +971,7 @@ def listen_telegram_updates():
                         onay_msg = (
                             f"✅ <b>KREDİ / ATIŞ İŞLEMİ ONAYLANDI!</b>\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📋 <b>Kayıt:</b> #{row_num}\n"
+                            f"📋 <b>Kayıt:</b> #{row_num + 1}\n"
                             f"💰 <b>Onaylanan Tutar:</b> <code>{amt_str}</code>\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
                             f"👉 <i>Lütfen sonraki adımı seçiniz:</i>"
@@ -977,7 +1033,7 @@ def listen_telegram_updates():
                             # 1) AKTARILAN HEDEF GRUPTAKİ MESAJI SİL / GERİ ÇEK
                             if target_chat_id and target_msg_id:
                                 delete_telegram_message(target_chat_id, target_msg_id)
-                                logger.info(f"Kayıt #{row_num} aktarılan gruptan ({target_g_name}) geri çekildi.")
+                                logger.info(f"Kayıt #{row_num + 1} aktarılan gruptan ({target_g_name}) geri çekildi.")
 
                         # Eğer buton işlem grubunda tıklandıysa ve target_chat_id ile bu chat aynıysa bu mesajı sil
                         if str(chat_id) != str(TELEGRAM_CHAT_ID):
@@ -1664,12 +1720,12 @@ def listen_telegram_updates():
                                 # Hemen sheet'i tara ve tüm kayıtları zorunlu olarak gruba aktar!
                                 try:
                                     threading.Thread(
-                                        target=check_and_send_sheet,
-                                        args=({"name": sheet_name, "url": clean_url, "id": s_id, "chat_id": target_group}, True),
+                                        target=run_sheets_transfer,
+                                        args=([{"name": sheet_name, "url": clean_url, "id": s_id, "chat_id": target_group}], target_group, True),
                                         daemon=True
                                     ).start()
                                 except Exception as e:
-                                    logger.error(f"check_and_send_sheet thread error: {e}")
+                                    logger.error(f"run_sheets_transfer thread error: {e}")
                             else:
                                 send_telegram_message(f"ℹ️ {msg_resp}", chat_id=from_chat_id)
                         else:
@@ -1702,30 +1758,23 @@ def listen_telegram_updates():
                                 f"Kayıtlı e-tablolardaki tüm veriler bu sohbete (<code>{target_group}</code>) etkileşim butonlarıyla aktarılıyor...",
                                 chat_id=from_chat_id
                             )
-                            for s in active_sheets:
-                                s_cfg = dict(s)
-                                s_cfg["chat_id"] = target_group
-                                reset_sheet_last_sent(s["id"])
-                                threading.Thread(
-                                    target=check_and_send_sheet,
-                                    args=(s_cfg, True),
-                                    daemon=True
-                                ).start()
+                            threading.Thread(
+                                target=run_sheets_transfer,
+                                args=(active_sheets, target_group, True),
+                                daemon=True
+                            ).start()
 
                     # /sifirla Komutu (Aktarım sayaçlarını sıfırla)
                     elif base_cmd in ["/sifirla", "/reset"]:
                         reset_sheet_last_sent()
                         target_group = str(from_chat_id)
                         send_telegram_message(f"🔄 <b>Aktarım sayaçları sıfırlandı!</b>\nTüm kayıtlar <code>{target_group}</code> sohbetine baştan aktarılıyor...", chat_id=from_chat_id)
-                        for s in get_sheets():
-                            if s.get("active", True):
-                                s_cfg = dict(s)
-                                s_cfg["chat_id"] = target_group
-                                threading.Thread(
-                                    target=check_and_send_sheet,
-                                    args=(s_cfg, True),
-                                    daemon=True
-                                ).start()
+                        active_sheets = [s for s in get_sheets() if s.get("active", True)]
+                        threading.Thread(
+                            target=run_sheets_transfer,
+                            args=(active_sheets, target_group, True),
+                            daemon=True
+                        ).start()
 
                     # /durum Komutu
                     elif cmd.startswith("/durum"):
@@ -1763,6 +1812,21 @@ def listen_telegram_updates():
 
 
 # ── Sheet Kontrol Döngüsü ───────────────────────────────────────────────────
+
+TRANSFER_LOCK = threading.Lock()
+
+
+def run_sheets_transfer(sheets_list: list[dict], target_chat: str = None, force_resend: bool = False):
+    """Sheet aktarımlarını sırayla, birbirine karışmadan ve kilit altında çalıştırır."""
+    with TRANSFER_LOCK:
+        for s in sheets_list:
+            s_cfg = dict(s)
+            if target_chat:
+                s_cfg["chat_id"] = target_chat
+            if force_resend:
+                reset_sheet_last_sent(s["id"])
+            check_and_send_sheet(s_cfg, force_resend=force_resend)
+
 
 def check_and_send_sheet(sheet_config: dict, force_resend: bool = False):
     sheet_name = sheet_config.get("name", "E-Tablo")
@@ -1817,13 +1881,13 @@ def check_and_send_sheet(sheet_config: dict, force_resend: bool = False):
     sent_count = 0
     for i, row in enumerate(new_rows):
         entry_number = start_idx + i
-        global_lead_id = get_next_global_id()
+        display_num = entry_number + 1
 
-        message = format_message(global_lead_id, row, col_mapping, sheet_name)
-        keyboard = build_record_keyboard(sheet_id, entry_number)
-
-        phone = row.get(col_mapping.get("phone_number", ""), "")
+        phone = extract_phone_from_row(row, col_mapping)
         tc_no = row.get(col_mapping.get("t.c_numaranız", ""), "")
+
+        message = format_message(display_num, row, col_mapping, sheet_name)
+        keyboard = build_record_keyboard(sheet_id, entry_number)
 
         success, msg_id = send_telegram_message(message, chat_id=target_chat, reply_markup=keyboard)
         if not success:
@@ -1831,7 +1895,7 @@ def check_and_send_sheet(sheet_config: dict, force_resend: bool = False):
             success, msg_id = send_telegram_message(message, chat_id=target_chat, reply_markup=keyboard)
 
         if success:
-            record_message_sent(sheet_id, entry_number, msg_id or 0, phone=phone, tc_no=tc_no, global_id=global_lead_id)
+            record_message_sent(sheet_id, entry_number, msg_id or 0, phone=phone, tc_no=tc_no, global_id=display_num)
             sent_count += 1
             time.sleep(1)
         else:
@@ -1851,14 +1915,13 @@ def check_and_send_sheet(sheet_config: dict, force_resend: bool = False):
 
 
 def check_all_sheets():
+    if TRANSFER_LOCK.locked():
+        logger.info("Transfer kilidi devrede, periyodik kontrol ertelendi.")
+        return
     sheets = get_sheets()
-    for sheet_config in sheets:
-        if not sheet_config.get("active", True):
-            continue
-        try:
-            check_and_send_sheet(sheet_config)
-        except Exception as e:
-            logger.error(f"[{sheet_config['name']}] Hata: {e}")
+    active_sheets = [s for s in sheets if s.get("active", True)]
+    if active_sheets:
+        run_sheets_transfer(active_sheets, force_resend=False)
 
 
 def main():

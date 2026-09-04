@@ -908,58 +908,63 @@ def get_next_global_id() -> int:
 
 
 def record_message_sent(sheet_id: str, row_num: int, message_id: int, phone: str = "", tc_no: str = "", global_id: int = None):
-    state = load_state()
-    if sheet_id not in state:
-        state[sheet_id] = {"last_sent": 0, "messages": {}, "statuses": {}, "clients": {}, "global_ids": {}, "deleted": []}
+    with STORE_LOCK:
+        state = load_state()
+        if sheet_id not in state:
+            state[sheet_id] = {"last_sent": 0, "messages": {}, "statuses": {}, "clients": {}, "global_ids": {}, "deleted": []}
 
-    sheet_st = state[sheet_id]
-    if "messages" not in sheet_st:
-        sheet_st["messages"] = {}
-    if "statuses" not in sheet_st:
-        sheet_st["statuses"] = {}
-    if "clients" not in sheet_st:
-        sheet_st["clients"] = {}
-    if "global_ids" not in sheet_st:
-        sheet_st["global_ids"] = {}
-    if "deleted" not in sheet_st:
-        sheet_st["deleted"] = []
+        sheet_st = state[sheet_id]
+        if "messages" not in sheet_st:
+            sheet_st["messages"] = {}
+        if "statuses" not in sheet_st:
+            sheet_st["statuses"] = {}
+        if "clients" not in sheet_st:
+            sheet_st["clients"] = {}
+        if "global_ids" not in sheet_st:
+            sheet_st["global_ids"] = {}
+        if "deleted" not in sheet_st:
+            sheet_st["deleted"] = []
 
-    sheet_st["last_sent"] = max(sheet_st.get("last_sent", 0), row_num + 1)
-    sheet_st["messages"][str(row_num)] = message_id
-    if global_id:
-        sheet_st["global_ids"][str(row_num)] = global_id
-        state["__global_lead_counter__"] = max(state.get("__global_lead_counter__", 0), global_id)
+        sheet_st["last_sent"] = max(sheet_st.get("last_sent", 0), row_num + 1)
+        sheet_st["messages"][str(row_num)] = message_id
+        if global_id:
+            sheet_st["global_ids"][str(row_num)] = global_id
+            state["__global_lead_counter__"] = max(state.get("__global_lead_counter__", 0), global_id)
 
-    if phone or tc_no:
-        sheet_st["clients"][str(row_num)] = {"phone": phone, "tc_no": tc_no}
-    save_state(state)
+        if phone or tc_no:
+            sheet_st["clients"][str(row_num)] = {"phone": phone, "tc_no": tc_no}
+        save_state(state)
 
 
 def get_record_global_id(sheet_id: str, row_num: int) -> int:
-    """Kaydın global kayıt numarasını döner, yoksa yerel row_num döner."""
-    state = load_state()
-    g_id = state.get(sheet_id, {}).get("global_ids", {}).get(str(row_num))
-    return int(g_id) if g_id else (row_num + 1)
+    """Kaydın global kayıt numarasını döner, yoksa yerel row_num + 1 döner."""
+    with STORE_LOCK:
+        state = load_state()
+        g_id = state.get(sheet_id, {}).get("global_ids", {}).get(str(row_num))
+        return int(g_id) if g_id else (row_num + 1)
 
 
 def set_record_status(sheet_id: str, row_num: int, status: str, user_name: str = "", note: str = ""):
     """Kaydın durumunu günceller ve müşterinin kalıcı CRM profiline de yansıtır."""
-    state = load_state()
-    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "clients": {}, "forwarded": {}, "deleted": []})
-    statuses = sheet_st.setdefault("statuses", {})
-    statuses[str(row_num)] = {
-        "status": status,
-        "user": user_name,
-        "note": note,
-        "time": time.strftime("%H:%M")
-    }
-    save_state(state)
-
-    # MÜŞTERİ KALICI CRM PROFİLİNİ ANINDA GÜNCELLE
-    try:
+    phone = ""
+    tc_no = ""
+    with STORE_LOCK:
+        state = load_state()
+        sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "clients": {}, "forwarded": {}, "deleted": []})
+        statuses = sheet_st.setdefault("statuses", {})
+        statuses[str(row_num)] = {
+            "status": status,
+            "user": user_name,
+            "note": note,
+            "time": time.strftime("%H:%M")
+        }
+        save_state(state)
         client_info = sheet_st.get("clients", {}).get(str(row_num), {})
         phone = client_info.get("phone", "")
         tc_no = client_info.get("tc_no", "")
+
+    # MÜŞTERİ KALICI CRM PROFİLİNİ ANINDA GÜNCELLE
+    try:
         if phone or tc_no:
             save_client_profile(phone, tc_no, extra_data={"sheet_id": sheet_id, "row_num": row_num}, status=status, note=note)
     except Exception as e:
@@ -967,36 +972,40 @@ def set_record_status(sheet_id: str, row_num: int, status: str, user_name: str =
 
 
 def get_record_status(sheet_id: str, row_num: int) -> dict:
-    state = load_state()
-    return state.get(sheet_id, {}).get("statuses", {}).get(str(row_num), {})
+    with STORE_LOCK:
+        state = load_state()
+        return state.get(sheet_id, {}).get("statuses", {}).get(str(row_num), {})
 
 
 def get_original_message_id(sheet_id: str, row_num: int) -> int | None:
     """Kaydın ana gruptaki orijinal mesaj ID'sini döner."""
-    state = load_state()
-    msg_id = state.get(sheet_id, {}).get("messages", {}).get(str(row_num))
-    return int(msg_id) if msg_id else None
+    with STORE_LOCK:
+        state = load_state()
+        msg_id = state.get(sheet_id, {}).get("messages", {}).get(str(row_num))
+        return int(msg_id) if msg_id else None
 
 
 def record_forward_event(sheet_id: str, row_num: int, target_chat_id: str, target_chat_name: str, target_msg_id: int, user_name: str):
     """Kaydın bir gruba aktarıldığını ve aktarım saatini kaydeder."""
-    state = load_state()
-    sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "forwarded": {}, "deleted": []})
-    fwd_dict = sheet_st.setdefault("forwarded", {})
-    fwd_dict[str(row_num)] = {
-        "target_chat_id": str(target_chat_id),
-        "target_chat_name": target_chat_name,
-        "target_msg_id": target_msg_id,
-        "fwd_user": user_name,
-        "fwd_timestamp": time.time(),
-        "fwd_time_str": time.strftime("%H:%M:%S"),
-    }
-    save_state(state)
+    with STORE_LOCK:
+        state = load_state()
+        sheet_st = state.setdefault(sheet_id, {"last_sent": 0, "messages": {}, "statuses": {}, "forwarded": {}, "deleted": []})
+        fwd_dict = sheet_st.setdefault("forwarded", {})
+        fwd_dict[str(row_num)] = {
+            "target_chat_id": str(target_chat_id),
+            "target_chat_name": target_chat_name,
+            "target_msg_id": target_msg_id,
+            "fwd_user": user_name,
+            "fwd_timestamp": time.time(),
+            "fwd_time_str": time.strftime("%H:%M:%S"),
+        }
+        save_state(state)
 
 
 def get_forward_event(sheet_id: str, row_num: int) -> dict | None:
-    state = load_state()
-    return state.get(sheet_id, {}).get("forwarded", {}).get(str(row_num))
+    with STORE_LOCK:
+        state = load_state()
+        return state.get(sheet_id, {}).get("forwarded", {}).get(str(row_num))
 
 
 def format_duration(seconds: float) -> str:
