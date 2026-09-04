@@ -63,6 +63,7 @@ from data_store import (
     get_pending_action,
     clear_pending_action,
     set_saha_rate,
+    fetch_sheet_data,
     record_forward_event,
     get_forward_event,
     format_duration,
@@ -111,28 +112,17 @@ TARGET_COLUMNS = [
 
 # ── Sheet Yardımcıları ──────────────────────────────────────────────────────
 
-def fetch_sheet_data(sheet_id: str) -> list[dict]:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    urls = [
-        f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv",
-        f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
-    ]
-    last_err = None
-    for csv_url in urls:
-        for attempt in range(2):
-            try:
-                response = requests.get(csv_url, headers=headers, timeout=20)
-                if response.status_code == 200 and response.content:
-                    content = response.content.decode("utf-8-sig")
-                    reader = csv.DictReader(io.StringIO(content))
-                    return list(reader)
-            except Exception as e:
-                last_err = e
-                time.sleep(1)
-    if last_err:
-        raise last_err
-    return []
-
+def get_panel_web_app_url() -> str:
+    """Telegram Mini App için yetkilendirme token'ı içeren güvenli ve doğrudan linki döner."""
+    if not PUBLIC_URL:
+        return ""
+    try:
+        from web_panel import get_auth_token
+        token = get_auth_token()
+        sep = "&" if "?" in PUBLIC_URL else "/?"
+        return f"{PUBLIC_URL.rstrip('/')}{sep}token={token}"
+    except Exception:
+        return PUBLIC_URL
 
 
 def normalize_tr(text: str) -> str:
@@ -1530,8 +1520,9 @@ def listen_telegram_updates():
                             "5. <b>İşlem Bitti:</b> Data aktarılan gruptan silinir, ana gruba <b>Süre Analizi</b> ile geri çekilir!"
                         )
                         markup = None
-                        if PUBLIC_URL:
-                            markup = {"inline_keyboard": [[{"text": "📊 Mini App Paneli Aç", "web_app": {"url": PUBLIC_URL}}]]}
+                        panel_url = get_panel_web_app_url()
+                        if panel_url:
+                            markup = {"inline_keyboard": [[{"text": "📊 Mini App Paneli Aç", "web_app": {"url": panel_url}}]]}
                         send_telegram_message(help_text, chat_id=from_chat_id, reply_markup=markup)
                         continue
 
@@ -1552,8 +1543,9 @@ def listen_telegram_updates():
                             "• <code>/panel</code> - Telegram içi Mini App panelini açar"
                         )
                         markup = None
-                        if PUBLIC_URL:
-                            markup = {"inline_keyboard": [[{"text": "📊 Mini App Paneli Aç", "web_app": {"url": PUBLIC_URL}}]]}
+                        panel_url = get_panel_web_app_url()
+                        if panel_url:
+                            markup = {"inline_keyboard": [[{"text": "📊 Mini App Paneli Aç", "web_app": {"url": panel_url}}]]}
                         send_telegram_message(welcome_text, chat_id=from_chat_id, reply_markup=markup)
 
                     # /data_grubu veya /ana_grup Komutu (Ana gelen kutusu grubunu ayarlar)
@@ -1952,8 +1944,9 @@ def listen_telegram_updates():
 
                     # /panel Komutu (Telegram Mini App - Dış browser yok)
                     elif cmd.startswith("/panel"):
-                        if PUBLIC_URL:
-                            markup = {"inline_keyboard": [[{"text": "📊 Mini App Paneli Aç", "web_app": {"url": PUBLIC_URL}}]]}
+                        panel_url = get_panel_web_app_url()
+                        if panel_url:
+                            markup = {"inline_keyboard": [[{"text": "📊 Mini App Paneli Aç", "web_app": {"url": panel_url}}]]}
                             send_telegram_message("📱 <b>Telegram Mini App Paneli:</b>\n\nAşağıdaki butona dokunarak paneli doğrudan Telegram içinde açabilirsiniz:", chat_id=from_chat_id, reply_markup=markup)
                         else:
                             send_telegram_message("Telegram Mini App adresi henüz ayarlanmamış.", chat_id=from_chat_id)

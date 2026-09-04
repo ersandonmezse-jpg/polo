@@ -30,20 +30,34 @@ logger = logging.getLogger(__name__)
 
 
 def run_web_panel():
-    """Flask web panelini başlatır."""
+    """Flask web panelini başlatır (Eşzamanlı istekler için threaded=True aktif)."""
     from web_panel import app
-    app.run(host="0.0.0.0", port=WEB_PORT, debug=False, use_reloader=False)
+    app.run(host="0.0.0.0", port=WEB_PORT, debug=False, use_reloader=False, threaded=True)
+
+
+def get_auth_panel_url(raw_url: str) -> str:
+    """Mini App linkine otomatik token ekleyerek PIN sormadan doğrudan açılmasını sağlar."""
+    if not raw_url:
+        return ""
+    try:
+        from web_panel import get_auth_token
+        token = get_auth_token()
+        sep = "&" if "?" in raw_url else "/?"
+        return f"{raw_url.rstrip('/')}{sep}token={token}"
+    except Exception:
+        return raw_url
 
 
 def set_bot_menu_button(web_app_url: str):
     """Telegram bot'a Mini App menü butonu ekler."""
     api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setChatMenuButton"
+    direct_url = get_auth_panel_url(web_app_url)
 
     payload = {
         "menu_button": {
             "type": "web_app",
             "text": "📊 Panel",
-            "web_app": {"url": web_app_url},
+            "web_app": {"url": direct_url},
         }
     }
 
@@ -51,7 +65,7 @@ def set_bot_menu_button(web_app_url: str):
         response = requests.post(api_url, json=payload, timeout=10)
         data = response.json()
         if data.get("ok"):
-            logger.info(f"Telegram menu butonu ayarlandi: {web_app_url}")
+            logger.info(f"Telegram menu butonu ayarlandi: {direct_url}")
         else:
             logger.error(f"Menu butonu hatasi: {data}")
     except Exception as e:
@@ -63,7 +77,7 @@ def set_bot_menu_button(web_app_url: str):
         "menu_button": {
             "type": "web_app",
             "text": "📊 Panel",
-            "web_app": {"url": web_app_url},
+            "web_app": {"url": direct_url},
         }
     }
     try:
@@ -102,6 +116,7 @@ def set_bot_commands():
 def send_panel_link(web_app_url: str):
     """Gruba Mini App panel butonunu gonderir."""
     api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    direct_url = get_auth_panel_url(web_app_url)
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -112,7 +127,7 @@ def send_panel_link(web_app_url: str):
             "inline_keyboard": [[
                 {
                     "text": "📊 Mini App Paneli Aç",
-                    "web_app": {"url": web_app_url}
+                    "web_app": {"url": direct_url}
                 }
             ]]
         }

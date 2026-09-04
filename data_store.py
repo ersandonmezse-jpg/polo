@@ -19,6 +19,8 @@ import threading
 import logging
 import requests
 import pytz
+import csv
+import io
 
 from config import (
     TELEGRAM_BOT_TOKEN,
@@ -613,6 +615,81 @@ def resolve_sheet_id(short_or_full_id: str) -> str:
             return full
 
     return sid
+
+
+# ── Sheet Veri Önbelleği (Mini App Donmalarını ve Rate-Limit'i Önler) ─────────
+_SHEET_DATA_CACHE = {}
+_SHEET_CACHE_LOCK = threading.RLock()
+SHEET_CACHE_TTL = 30  # 30 saniye
+
+
+def clear_sheet_cache(sheet_id: str = None):
+    """Belirtilen sheet'in veya tüm sheetlerin önbelleğini temizler."""
+    with _SHEET_CACHE_LOCK:
+        if sheet_id:
+            resolved = resolve_sheet_id(sheet_id) or sheet_id
+            _SHEET_DATA_CACHE.pop(resolved, None)
+            _SHEET_DATA_CACHE.pop(sheet_id, None)
+        else:
+            _SHEET_DATA_CACHE.clear()
+
+
+def fetch_sheet_data(sheet_id: str, force_refresh: bool = False) -> list[dict]:
+    """
+    Google Sheets verilerini thread-safe ve akıllı önbellek ile çeker.
+    - 30 saniyelik TTL ile gereksiz Google HTTP isteklerini ve Mini App donmalarını engeller.
+    - 6 saniye timeout ile Google sunucu takılmalarında sayfanın kilitlenmesini önler.
+    - Google erişim hatası olursa, hafızadaki son geçerli veriyi fallback olarak döner.
+    """
+    if not sheet_id:
+        return []
+
+    resolved_id = resolve_sheet_id(sheet_id) or sheet_id
+    now = time.time()
+
+    # 1. Önbellek kontrolü (Eğer zorunlu yenileme istenmediyse)
+    if not force_refresh:
+        with _SHEET_CACHE_LOCK:
+            cached = _SHEET_DATA_CACHE.get(resolved_id) or _SHEET_DATA_CACHE.get(sheet_id)
+            if cached and (now - cached.get("time", 0) < SHEET_CACHE_TTL):
+                return list(cached.get("data", []))
+
+    # 2. Canlı Google CSV export isteği
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    urls = [
+        f"https://docs.google.com/spreadsheets/d/{resolved_id}/export?format=csv",
+        f"https://docs.google.com/spreadsheets/d/{resolved_id}/gviz/tq?tqx=out:csv"
+    ]
+
+    last_err = None
+    for csv_url in urls:
+        try:
+            response = requests.get(csv_url, headers=headers, timeout=6)
+            if response.status_code == 200 and response.content:
+                content = response.content.decode("utf-8-sig")
+                rows = list(csv.DictReader(io.StringIO(content)))
+                with _SHEET_CACHE_LOCK:
+                    _SHEET_DATA_CACHE[resolved_id] = {
+                        "data": rows,
+                        "time": now
+                    }
+                    if sheet_id != resolved_id:
+                        _SHEET_DATA_CACHE[sheet_id] = _SHEET_DATA_CACHE[resolved_id]
+                return rows
+        except Exception as e:
+            last_err = e
+            continue
+
+    # 3. Canlı çekim başarısız olursa son geçerli önbelleği kullan (Donmayı %100 engeller)
+    with _SHEET_CACHE_LOCK:
+        cached = _SHEET_DATA_CACHE.get(resolved_id) or _SHEET_DATA_CACHE.get(sheet_id)
+        if cached and cached.get("data"):
+            logger.warning(f"Google Sheet canlı çekilemedi ({resolved_id}), son önbellek verisi sunuluyor: {last_err}")
+            return list(cached["data"])
+
+    if last_err:
+        logger.error(f"Google Sheet veri çekme hatası ({resolved_id}): {last_err}")
+    return []
 
 
 # ── Google Sheets Yapılandırma Yönetimi ──────────────────────────────────────

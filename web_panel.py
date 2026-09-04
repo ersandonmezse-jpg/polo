@@ -14,6 +14,7 @@ import os
 import re
 import logging
 import threading
+import time
 from datetime import datetime
 from functools import wraps
 
@@ -50,6 +51,8 @@ from data_store import (
     get_all_users,
     restore_default_sheets,
     wipe_all_system_data,
+    fetch_sheet_data,
+    clear_sheet_cache,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -92,28 +95,6 @@ TARGET_COLUMNS = [
 
 
 # ── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
-
-def fetch_sheet_data(sheet_id: str) -> list[dict]:
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    urls = [
-        f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv",
-        f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
-    ]
-    last_err = None
-    for csv_url in urls:
-        for attempt in range(2):
-            try:
-                response = requests.get(csv_url, headers=headers, timeout=20)
-                if response.status_code == 200 and response.content:
-                    content = response.content.decode("utf-8-sig")
-                    return list(csv.DictReader(io.StringIO(content)))
-            except Exception as e:
-                last_err = e
-                time.sleep(1)
-    if last_err:
-        raise last_err
-    return []
-
 
 def normalize_tr(text: str) -> str:
     """Türkçe karakterleri ve özel işaretleri temizler."""
@@ -269,6 +250,8 @@ def login_required(f):
             return f(*args, **kwargs)
         if request.path.startswith("/api/"):
             return jsonify({"ok": False, "success": False, "error": "Unauthorized"}), 401
+        if req_token and not is_valid_token(req_token):
+            return redirect(url_for("login") + "?auth_failed=1")
         return redirect(url_for("login"))
     return decorated
 
@@ -459,9 +442,14 @@ LOGIN_HTML = """
 
         // Önceden oturum açılmış ve geçerli token varsa otomatik panele yönlendir
         try {
-            const savedToken = localStorage.getItem("tg_auth_token");
-            if (savedToken && !window.location.search.includes("logout")) {
-                window.location.replace("/?token=" + encodeURIComponent(savedToken));
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.has("auth_failed") || urlParams.has("logout")) {
+                localStorage.removeItem("tg_auth_token");
+            } else {
+                const savedToken = localStorage.getItem("tg_auth_token");
+                if (savedToken) {
+                    window.location.replace("/?token=" + encodeURIComponent(savedToken));
+                }
             }
         } catch (e) {}
 
@@ -510,9 +498,10 @@ LOGIN_HTML = """
                     window.location.replace("/?token=" + encodeURIComponent(data.token));
                 } else {
                     triggerHaptic("warning");
-                    alert(data.error || "Yanlış PIN kodu!");
+                    if (subTitle) {
+                        subTitle.innerHTML = "<span style='color:#f87171; font-weight:600;'>❌ " + (data.error || "Yanlış PIN kodu!") + "</span>";
+                    }
                     clearPin();
-                    if (subTitle) subTitle.innerHTML = "PIN kodunu tuşlayın";
                     isSubmitting = false;
                     btns.forEach(b => b.disabled = false);
                 }
@@ -1135,7 +1124,7 @@ DASHBOARD_HTML = """
             <div class="top-actions">
                 <button class="icon-btn primary" onclick="openLinksModal()" title="Link Yönetimi">🔗 Linkler</button>
                 <button class="icon-btn" onclick="openGroupsModal()" title="Hedef Gruplar">👥 Gruplar</button>
-                <button class="icon-btn" onclick="location.reload()" title="Yenile">🔄</button>
+                <button class="icon-btn" id="refreshBtn" onclick="refreshPage()" title="Yenile">🔄 Yenile</button>
                 <a href="/logout" class="icon-btn" title="Çıkış">🚪</a>
             </div>
         </div>
@@ -1144,39 +1133,39 @@ DASHBOARD_HTML = """
         <div class="date-filter-bar">
             <span style="font-size:11px; font-weight:700; color:var(--hint-color); text-transform:uppercase;">📅 Raporlama:</span>
             <div class="filter-buttons">
-                <a href="/?filter=today" class="f-btn {% if active_filter == 'today' %}active{% endif %}">Bugün</a>
-                <a href="/?filter=yesterday" class="f-btn {% if active_filter == 'yesterday' %}active{% endif %}">Dün</a>
-                <a href="/?filter=week" class="f-btn {% if active_filter == 'week' %}active{% endif %}">Bu Hafta</a>
-                <a href="/?filter=month" class="f-btn {% if active_filter == 'month' %}active{% endif %}">Bu Ay</a>
-                <a href="/?filter=all" class="f-btn {% if active_filter == 'all' %}active{% endif %}">Tüm Zamanlar</a>
+                <button type="button" class="f-btn {% if active_filter == 'today' %}active{% endif %}" onclick="setKpiFilter('today', this)">Bugün</button>
+                <button type="button" class="f-btn {% if active_filter == 'yesterday' %}active{% endif %}" onclick="setKpiFilter('yesterday', this)">Dün</button>
+                <button type="button" class="f-btn {% if active_filter == 'week' %}active{% endif %}" onclick="setKpiFilter('week', this)">Bu Hafta</button>
+                <button type="button" class="f-btn {% if active_filter == 'month' %}active{% endif %}" onclick="setKpiFilter('month', this)">Bu Ay</button>
+                <button type="button" class="f-btn {% if active_filter == 'all' %}active{% endif %}" onclick="setKpiFilter('all', this)">Tüm Zamanlar</button>
             </div>
         </div>
 
         <!-- Rich KPI Stats Bar -->
-        <div class="stats-bar">
+        <div class="stats-bar" id="kpi-stats-container">
             <div class="stat-card blue">
                 <div class="s-label">📞 İşlenen Data</div>
-                <div class="s-value">{{ kpi.total_data_worked }} <span style="font-size:11px; font-weight:500; color:var(--hint-color);">/ {{ total_rows }}</span></div>
+                <div class="s-value" id="kpi-total-worked">{{ kpi.total_data_worked }} <span style="font-size:11px; font-weight:500; color:var(--hint-color);">/ {{ total_rows }}</span></div>
             </div>
             <div class="stat-card">
                 <div class="s-label">👥 Aktif Grup</div>
-                <div class="s-value">{{ kpi.active_groups_count }} <span style="font-size:11px; font-weight:500; color:var(--hint-color);">Grup</span></div>
+                <div class="s-value" id="kpi-active-groups">{{ kpi.active_groups_count }} <span style="font-size:11px; font-weight:500; color:var(--hint-color);">Grup</span></div>
             </div>
             <div class="stat-card yellow">
                 <div class="s-label">💳 Kredi Düştü</div>
-                <div class="s-value">{{ kpi.kredi_count }} <span style="font-size:11px; font-weight:600; color:#facc15;">({{ "{:,.0f}".format(kpi.kredi_total_amt or 0) }} TL)</span></div>
+                <div class="s-value" id="kpi-kredi-stat">{{ kpi.kredi_count }} <span style="font-size:11px; font-weight:600; color:#facc15;">({{ "{:,.0f}".format(kpi.kredi_total_amt or 0) }} TL)</span></div>
             </div>
             <div class="stat-card green">
                 <div class="s-label">✅ Onaylanan</div>
-                <div class="s-value">{{ kpi.onay_count }} <span style="font-size:11px; font-weight:600; color:#4ade80;">({{ "{:,.0f}".format(kpi.onay_total_amt or 0) }} TL)</span></div>
+                <div class="s-value" id="kpi-onay-stat">{{ kpi.onay_count }} <span style="font-size:11px; font-weight:600; color:#4ade80;">({{ "{:,.0f}".format(kpi.onay_total_amt or 0) }} TL)</span></div>
             </div>
             <div class="stat-card red">
                 <div class="s-label">🚫 Bloke Oldu</div>
-                <div class="s-value">{{ kpi.bloke_count }}</div>
+                <div class="s-value" id="kpi-bloke-count">{{ kpi.bloke_count }}</div>
             </div>
             <div class="stat-card">
                 <div class="s-label">🔴 Olumsuz / Kaçan</div>
-                <div class="s-value">{{ kpi.olumsuz_count }}</div>
+                <div class="s-value" id="kpi-olumsuz-count">{{ kpi.olumsuz_count }}</div>
             </div>
         </div>
 
@@ -1498,9 +1487,17 @@ DASHBOARD_HTML = """
 
     <script>
         if (window.Telegram && Telegram.WebApp) {
-            Telegram.WebApp.ready();
-            Telegram.WebApp.expand();
-            Telegram.WebApp.headerColor = Telegram.WebApp.themeParams.bg_color || '#0c0e14';
+            try {
+                Telegram.WebApp.ready();
+                Telegram.WebApp.expand();
+                if (Telegram.WebApp.setHeaderColor) {
+                    Telegram.WebApp.setHeaderColor(Telegram.WebApp.themeParams.bg_color || '#0c0e14');
+                } else {
+                    Telegram.WebApp.headerColor = Telegram.WebApp.themeParams.bg_color || '#0c0e14';
+                }
+            } catch (e) {
+                console.warn("Telegram WebApp init error:", e);
+            }
         }
 
         function showToast(msg, isError = false) {
@@ -1629,8 +1626,38 @@ DASHBOARD_HTML = """
 
         // ── Kopyalama Fonksiyonları ──
 
+        function fallbackCopy(text) {
+            try {
+                const ta = document.createElement("textarea");
+                ta.value = text;
+                ta.style.position = "fixed";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                const successful = document.execCommand('copy');
+                document.body.removeChild(ta);
+                return successful;
+            } catch (err) {
+                return false;
+            }
+        }
+
+        function copyText(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                return navigator.clipboard.writeText(text).catch(() => {
+                    if (fallbackCopy(text)) return Promise.resolve();
+                    return Promise.reject(new Error("Copy failed"));
+                });
+            }
+            return new Promise((resolve, reject) => {
+                if (fallbackCopy(text)) resolve();
+                else reject(new Error("Copy failed"));
+            });
+        }
+
         function copyTC(btn, tc) {
-            navigator.clipboard.writeText(tc).then(() => {
+            copyText(tc).then(() => {
                 btn.classList.add('copied');
                 const prev = btn.innerHTML;
                 btn.innerHTML = '<span>' + tc + '</span><span style="font-size:11px;">✓ Kopyalandı</span>';
@@ -1640,6 +1667,8 @@ DASHBOARD_HTML = """
                     btn.innerHTML = prev;
                     btn.classList.remove('copied');
                 }, 1200);
+            }).catch(() => {
+                showToast("Kopyalama başarısız", true);
             });
         }
 
@@ -1653,7 +1682,7 @@ DASHBOARD_HTML = """
                          "📞 Telefon: " + phone + "\\n" +
                          "━━━━━━━━━━━━━━━━━━━━━━";
 
-            navigator.clipboard.writeText(text).then(() => {
+            copyText(text).then(() => {
                 btn.classList.add('copied');
                 const prev = btn.innerHTML;
                 btn.innerHTML = '<span>✓</span><span>Kopyalandı!</span>';
@@ -1663,6 +1692,8 @@ DASHBOARD_HTML = """
                     btn.innerHTML = prev;
                     btn.classList.remove('copied');
                 }, 1500);
+            }).catch(() => {
+                showToast("Kopyalama başarısız", true);
             });
         }
 
@@ -2066,6 +2097,67 @@ DASHBOARD_HTML = """
                 }
             );
         }
+
+        let currentKpiFilter = '{{ active_filter }}';
+
+        async function setKpiFilter(filterMode, btnEl) {
+            currentKpiFilter = filterMode;
+            document.querySelectorAll('.filter-buttons .f-btn').forEach(b => b.classList.remove('active'));
+            if (btnEl) btnEl.classList.add('active');
+
+            const container = document.getElementById("kpi-stats-container");
+            if (container) container.style.opacity = "0.5";
+
+            try {
+                const res = await fetch('/api/kpi?filter=' + encodeURIComponent(filterMode));
+                const data = await res.json();
+                if (data.ok && data.kpi) {
+                    const k = data.kpi;
+                    const elWorked = document.getElementById("kpi-total-worked");
+                    if (elWorked) elWorked.innerHTML = k.total_data_worked + ' <span style="font-size:11px; font-weight:500; color:var(--hint-color);">/ ' + data.total_rows + '</span>';
+
+                    const elGroups = document.getElementById("kpi-active-groups");
+                    if (elGroups) elGroups.innerHTML = k.active_groups_count + ' <span style="font-size:11px; font-weight:500; color:var(--hint-color);">Grup</span>';
+
+                    const elKredi = document.getElementById("kpi-kredi-stat");
+                    if (elKredi) elKredi.innerHTML = k.kredi_count + ' <span style="font-size:11px; font-weight:600; color:#facc15;">(' + Number(k.kredi_total_amt || 0).toLocaleString('tr-TR') + ' TL)</span>';
+
+                    const elOnay = document.getElementById("kpi-onay-stat");
+                    if (elOnay) elOnay.innerHTML = k.onay_count + ' <span style="font-size:11px; font-weight:600; color:#4ade80;">(' + Number(k.onay_total_amt || 0).toLocaleString('tr-TR') + ' TL)</span>';
+
+                    const elBloke = document.getElementById("kpi-bloke-count");
+                    if (elBloke) elBloke.textContent = k.bloke_count;
+
+                    const elOlumsuz = document.getElementById("kpi-olumsuz-count");
+                    if (elOlumsuz) elOlumsuz.textContent = k.olumsuz_count;
+
+                    triggerHaptic("selection");
+                }
+            } catch (err) {
+                console.error("KPI filtre hatası:", err);
+            } finally {
+                if (container) container.style.opacity = "1";
+            }
+        }
+
+        async function refreshPage() {
+            const btn = document.getElementById("refreshBtn");
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '⏳ Yenileniyor...';
+            }
+            showToast("Veriler güncelleniyor...");
+            try {
+                await fetch('/api/refresh-data', { method: 'POST' });
+            } catch(e) {}
+            const token = localStorage.getItem("tg_auth_token") || '{{ auth_token }}';
+            if (token) {
+                window.location.href = "/?token=" + encodeURIComponent(token) + "&filter=" + encodeURIComponent(currentKpiFilter) + "&refresh=1";
+            } else {
+                window.location.reload();
+            }
+        }
+
         // Token'ı localStorage'dan alıp her API isteğine otomatik iliştir
         (function() {
             try {
@@ -2194,6 +2286,10 @@ def logout():
 @app.route("/")
 @login_required
 def dashboard():
+    force_refresh = bool(request.args.get("refresh"))
+    if force_refresh:
+        clear_sheet_cache()
+
     filter_mode = request.args.get("filter", "today")
     now_dt = datetime.now()
     start_date = None
@@ -2247,7 +2343,7 @@ def dashboard():
         }
 
         try:
-            raw_rows = fetch_sheet_data(sheet_id)
+            raw_rows = fetch_sheet_data(sheet_id, force_refresh=force_refresh)
             if raw_rows:
                 headers = list(raw_rows[0].keys())
                 col_mapping = find_column_mapping(headers)
@@ -2311,7 +2407,61 @@ def dashboard():
         active_filter=filter_mode,
         today_summary=today_summary,
         all_users=all_users,
+        auth_token=get_auth_token(),
     )
+
+
+@app.route("/api/kpi")
+@login_required
+def api_kpi():
+    filter_mode = request.args.get("filter", "today")
+    now_dt = datetime.now()
+    start_date = None
+    end_date = None
+
+    if filter_mode == "today":
+        start_date = end_date = now_dt.strftime("%Y-%m-%d")
+    elif filter_mode == "yesterday":
+        yest = now_dt.fromtimestamp(now_dt.timestamp() - 86400)
+        start_date = end_date = yest.strftime("%Y-%m-%d")
+    elif filter_mode == "week":
+        week_ago = now_dt.fromtimestamp(now_dt.timestamp() - (7 * 86400))
+        start_date = week_ago.strftime("%Y-%m-%d")
+        end_date = now_dt.strftime("%Y-%m-%d")
+    elif filter_mode == "month":
+        month_ago = now_dt.fromtimestamp(now_dt.timestamp() - (30 * 86400))
+        start_date = month_ago.strftime("%Y-%m-%d")
+        end_date = now_dt.strftime("%Y-%m-%d")
+    elif filter_mode == "all":
+        start_date = "2020-01-01"
+        end_date = "2099-12-31"
+
+    kpi = get_dashboard_metrics(start_date, end_date)
+
+    total_rows = 0
+    for sheet_config in get_sheets():
+        sheet_id = sheet_config.get("id")
+        if not sheet_id:
+            try:
+                sheet_id = extract_sheet_id(sheet_config["url"])
+            except Exception:
+                continue
+        try:
+            raw_rows = fetch_sheet_data(sheet_id)
+            for idx in range(len(raw_rows)):
+                if not is_record_deleted(sheet_id, idx):
+                    total_rows += 1
+        except Exception:
+            pass
+
+    return jsonify({"ok": True, "kpi": kpi, "total_rows": total_rows})
+
+
+@app.route("/api/refresh-data", methods=["POST"])
+@login_required
+def api_refresh_data():
+    clear_sheet_cache()
+    return jsonify({"ok": True, "message": "Önbellek temizlendi"})
 
 
 # ── REST API Endpoints ───────────────────────────────────────────────────────
