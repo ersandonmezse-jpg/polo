@@ -206,16 +206,28 @@ def extract_phone_from_row(row: dict, col_mapping: dict = None) -> str:
                     raw_phone = val
                     break
 
-    # 3. Veri deseni taraması (değer p:+, +90, 05 veya telefon formatı içeriyorsa)
+    # 3. Veri deseni taraması (değer p:+, +90, 05, 5xx veya telefon formatı içeriyorsa)
     if not raw_phone:
         for k, v in row.items():
+            if not k:
+                continue
+            k_norm = normalize_tr(str(k))
+            if any(skip in k_norm for skip in ["tc", "kimlik", "tckn", "kart", "limit", "id", "ad_id", "form_id"]):
+                continue
             val = str(v or "").strip()
-            if val.startswith("p:+") or val.startswith("+90") or (val.startswith("05") and len(val) >= 10):
+            digits = re.sub(r"[^\d]", "", val)
+            if (
+                val.lower().startswith("p:")
+                or val.startswith("+90")
+                or (digits.startswith("05") and len(digits) == 11)
+                or (digits.startswith("5") and len(digits) == 10)
+                or (digits.startswith("905") and len(digits) == 12)
+            ):
                 raw_phone = val
                 break
 
     # Varsa teknik Meta Lead Ads ön eki olan 'p:' temizlenir, numara olduğu gibi korunur
-    if raw_phone.startswith("p:"):
+    if raw_phone.lower().startswith("p:"):
         raw_phone = raw_phone[2:].strip()
 
     return raw_phone
