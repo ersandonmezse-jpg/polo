@@ -813,6 +813,11 @@ DASHBOARD_HTML = """
             opacity: 0;
             transform: scale(0.92);
         }
+        .data-card.selected {
+            border-color: rgba(99, 102, 241, 0.7) !important;
+            background: rgba(99, 102, 241, 0.08) !important;
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.2);
+        }
 
         /* Card Header */
         .card-top {
@@ -1235,8 +1240,8 @@ DASHBOARD_HTML = """
         <!-- Sheet Tabs -->
         <div class="tabs-scroller">
             {% for sheet in sheets %}
-            <button class="sheet-tab {% if loop.first %}active{% endif %}" onclick="switchTab('tab-{{ sheet.id }}', this)">
-                {{ sheet.name }} ({{ sheet.visible_count }})
+            <button class="sheet-tab {% if loop.first %}active{% endif %}" id="tab-btn-{{ sheet.id }}" onclick="switchTab('tab-{{ sheet.id }}', this)">
+                {{ sheet.name }} (<span id="tab-cnt-{{ sheet.id }}">{{ sheet.visible_count }}</span>)
             </button>
             {% endfor %}
         </div>
@@ -1278,17 +1283,17 @@ DASHBOARD_HTML = """
             <!-- Toplu İşlem Çubuğu (Bulk Action Toolbar) -->
             <div class="bulk-toolbar" id="bulk-bar-{{ sheet.id }}" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; background:var(--card-bg); border:1px solid var(--border-color); border-radius:10px; padding:8px 12px; margin-bottom:10px; font-size:12px;">
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:600; color:var(--text-color); user-select:none;">
-                        <input type="checkbox" id="select-all-{{ sheet.id }}" onchange="toggleSelectAll('{{ sheet.id }}', this)" style="cursor:pointer; width:16px; height:16px; accent-color:var(--primary-color);">
-                        <span>Tümünü Seç</span>
-                    </label>
-                    <span id="sel-badge-{{ sheet.id }}" style="font-size:11px; background:rgba(255,255,255,0.08); color:var(--hint-color); padding:2px 8px; border-radius:12px; font-weight:700;">0 seçildi</span>
+                    <div class="select-all-btn" onclick="toggleSelectAllMaster('{{ sheet.id }}')" style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; background:rgba(255,255,255,0.06); padding:6px 12px; border-radius:8px; border:1px solid var(--border-color); user-select:none; -webkit-tap-highlight-color:transparent;">
+                        <input type="checkbox" id="select-all-{{ sheet.id }}" onclick="event.stopPropagation(); toggleSelectAll('{{ sheet.id }}', this);" onchange="toggleSelectAll('{{ sheet.id }}', this);" style="cursor:pointer; width:18px; height:18px; accent-color:var(--btn-color); margin:0;">
+                        <span style="font-weight:700; font-size:12px; color:var(--text-color);">Tümünü Seç</span>
+                    </div>
+                    <span id="sel-badge-{{ sheet.id }}" style="font-size:11px; background:rgba(255,255,255,0.08); color:var(--hint-color); padding:4px 10px; border-radius:12px; font-weight:700;">0 seçildi</span>
                 </div>
                 <div style="display:flex; align-items:center; gap:6px;">
-                    <button type="button" class="sm-btn del" style="padding:5px 12px; font-size:11px; border-radius:6px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.3); color:#f87171; cursor:pointer;" onclick="bulkDeleteSelected('{{ sheet.id }}')">
+                    <button type="button" class="sm-btn del" id="btn-bulk-del-{{ sheet.id }}" style="padding:6px 14px; font-size:11px; font-weight:700; border-radius:8px; background:rgba(239,68,68,0.18); border:1px solid rgba(239,68,68,0.4); color:#f87171; cursor:pointer;" onclick="bulkDeleteSelected('{{ sheet.id }}')">
                         🗑️ Seçilenleri Sil
                     </button>
-                    <button type="button" class="sm-btn del" style="padding:5px 12px; font-size:11px; border-radius:6px; background:rgba(239,68,68,0.25); border:1px solid rgba(239,68,68,0.5); color:#fca5a5; font-weight:700; cursor:pointer;" onclick="bulkDeleteAll('{{ sheet.id }}', '{{ sheet.name|replace(\"'\", \"\\\\'\") }}')">
+                    <button type="button" class="sm-btn del" style="padding:6px 12px; font-size:11px; border-radius:8px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); color:#fca5a5; cursor:pointer;" onclick="bulkDeleteAll('{{ sheet.id }}', '{{ sheet.name|replace(\"'\", \"\\\\'\") }}')">
                         ⚠️ Tüm Dataları Sil
                     </button>
                 </div>
@@ -1299,8 +1304,10 @@ DASHBOARD_HTML = """
                     {% for row in sheet.rows|reverse %}
                     <div class="data-card" id="card-{{ sheet.id }}-{{ row.raw_row_index }}" data-global-id="{{ row.num }}" data-search="{{ row.tc_no }} {{ row.phone }} {{ row.calisma_durumu }} {{ row.lead_status }}">
                         <div class="card-top">
-                            <div style="display:flex; align-items:center; gap:6px;">
-                                <input type="checkbox" class="record-cb" data-sheet="{{ sheet.id }}" value="{{ row.raw_row_index }}" onchange="updateSelection('{{ sheet.id }}')" style="cursor:pointer; width:16px; height:16px; margin-right:2px; accent-color:var(--primary-color);">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <div style="display:flex; align-items:center; cursor:pointer; padding:2px;" onclick="event.stopPropagation(); toggleCardCheckbox('{{ sheet.id }}', '{{ row.raw_row_index }}')">
+                                    <input type="checkbox" class="record-cb" id="cb-{{ sheet.id }}-{{ row.raw_row_index }}" data-sheet="{{ sheet.id }}" value="{{ row.raw_row_index }}" onclick="event.stopPropagation(); updateSelection('{{ sheet.id }}');" onchange="updateSelection('{{ sheet.id }}');" style="cursor:pointer; width:18px; height:18px; accent-color:var(--btn-color); margin:0;">
+                                </div>
                                 <span class="card-id-tag">#{{ row.num }}</span>
                                 {% if row.lead_status %}
                                 <span style="font-size:10px; font-weight:700; background:rgba(34,197,94,0.15); color:#4ade80; border:1px solid rgba(34,197,94,0.3); padding:1px 6px; border-radius:6px;" title="{{ row.lead_user }} - {{ row.lead_time }}">
@@ -1368,7 +1375,7 @@ DASHBOARD_HTML = """
     </div>
 
     <!-- Native-style Confirmation Modal (Never blocked by WebApp) -->
-    <div class="links-modal" id="appConfirmModal" style="z-index: 99999;">
+    <div class="links-modal" id="appConfirmModal" style="z-index: 99999;" onclick="if(event.target === this) closeAppConfirm()">
         <div class="modal-content" style="max-width: 360px; text-align: center; padding: 24px 20px;">
             <div id="appConfirmIcon" style="font-size: 38px; margin-bottom: 12px;">🗑️</div>
             <h3 id="appConfirmTitle" style="font-size: 17px; font-weight: 700; margin-bottom: 8px; color: var(--text-color);">İşlem Onayı</h3>
@@ -1377,7 +1384,7 @@ DASHBOARD_HTML = """
                 <button type="button" class="sm-btn" onclick="closeAppConfirm()" style="flex: 1; padding: 11px; font-size: 13px; font-weight: 600; border-radius: 10px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.06); color: var(--text-color); cursor: pointer;">
                     İptal
                 </button>
-                <button type="button" id="appConfirmOkBtn" style="flex: 1; padding: 11px; font-size: 13px; font-weight: 700; border-radius: 10px; border: none; background: #ef4444; color: #fff; cursor: pointer;">
+                <button type="button" id="appConfirmOkBtn" onclick="handleAppConfirmOk()" style="flex: 1; padding: 11px; font-size: 13px; font-weight: 700; border-radius: 10px; border: none; background: #ef4444; color: #fff; cursor: pointer;">
                     Evet, Sil
                 </button>
             </div>
@@ -1500,6 +1507,57 @@ DASHBOARD_HTML = """
             }
         }
 
+        function getAuthToken() {
+            try {
+                const p = new URLSearchParams(window.location.search);
+                const t = p.get("token");
+                if (t) localStorage.setItem("tg_auth_token", t);
+            } catch (e) {}
+            return localStorage.getItem("tg_auth_token") || '{{ auth_token }}';
+        }
+
+        function apiFetch(url, options) {
+            options = options || {};
+            options.headers = options.headers || {};
+            const token = getAuthToken();
+            if (token) {
+                if (options.headers instanceof Headers) {
+                    options.headers.set("X-Auth-Token", token);
+                } else {
+                    options.headers["X-Auth-Token"] = token;
+                }
+                const sep = url.includes("?") ? "&" : "?";
+                if (!url.includes("token=")) {
+                    url = url + sep + "token=" + encodeURIComponent(token);
+                }
+            }
+            return fetch(url, options);
+        }
+
+        // Global fetch çağrılarına token iliştir
+        (function() {
+            try {
+                const token = getAuthToken();
+                if (token) {
+                    const origFetch = window.fetch;
+                    window.fetch = function(url, opts) {
+                        opts = opts || {};
+                        opts.headers = opts.headers || {};
+                        if (opts.headers instanceof Headers) {
+                            opts.headers.set("X-Auth-Token", token);
+                        } else {
+                            opts.headers["X-Auth-Token"] = token;
+                        }
+                        if (typeof url === "string" && !url.includes("token=")) {
+                            const sep = url.includes("?") ? "&" : "?";
+                            url = url + sep + "token=" + encodeURIComponent(token);
+                        }
+                        return origFetch(url, opts);
+                    };
+                }
+            } catch (e) {}
+        })();
+
         function showToast(msg, isError = false) {
             const toast = document.getElementById("toast");
             if (!toast) return;
@@ -1529,9 +1587,10 @@ DASHBOARD_HTML = """
         let appConfirmCb = null;
 
         function showAppConfirm(title, message, icon, okText, isDanger, onConfirm) {
+            appConfirmCb = onConfirm;
             const modal = document.getElementById("appConfirmModal");
             if (!modal) {
-                if (confirm(message)) {
+                if (window.confirm(message)) {
                     if (typeof onConfirm === "function") onConfirm();
                 }
                 return;
@@ -1542,10 +1601,10 @@ DASHBOARD_HTML = """
             const okBtn = document.getElementById("appConfirmOkBtn");
             if (okBtn) {
                 okBtn.innerText = okText || "Evet, Onayla";
-                okBtn.style.background = (isDanger !== false) ? "#ef4444" : "var(--primary-color)";
+                okBtn.style.background = (isDanger !== false) ? "#ef4444" : "var(--btn-color, #6366f1)";
+                okBtn.onclick = handleAppConfirmOk;
             }
 
-            appConfirmCb = onConfirm;
             modal.classList.add("open");
         }
 
@@ -1555,26 +1614,17 @@ DASHBOARD_HTML = """
             appConfirmCb = null;
         }
 
-        document.addEventListener("DOMContentLoaded", function() {
-            const okBtn = document.getElementById("appConfirmOkBtn");
-            if (okBtn) {
-                okBtn.addEventListener("click", function() {
-                    const cb = appConfirmCb;
-                    closeAppConfirm();
-                    if (typeof cb === "function") {
-                        cb();
-                    }
-                });
+        function handleAppConfirmOk() {
+            const cb = appConfirmCb;
+            closeAppConfirm();
+            if (typeof cb === "function") {
+                try {
+                    cb();
+                } catch (e) {
+                    console.error("Confirm callback error:", e);
+                }
             }
-            const modal = document.getElementById("appConfirmModal");
-            if (modal) {
-                modal.addEventListener("click", function(e) {
-                    if (e.target === modal) {
-                        closeAppConfirm();
-                    }
-                });
-            }
-        });
+        }
 
         function toggleDailySummary() {
             const el = document.getElementById("daily-summary-body");
@@ -1699,8 +1749,6 @@ DASHBOARD_HTML = """
 
         // ── Kayıt Silme Fonksiyonu ──
 
-        // ── Kayıt Silme Fonksiyonu ──
-
         function deleteRecordPrompt(sheetId, rowNum, displayNum) {
             const label = displayNum ? ("#" + displayNum) : ("#" + (parseInt(rowNum) + 1));
             showAppConfirm(
@@ -1710,7 +1758,7 @@ DASHBOARD_HTML = """
                 "Evet, Sil",
                 true,
                 function() {
-                    fetch("/api/delete-record", {
+                    apiFetch("/api/delete-record", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ sheet_id: sheetId, row_num: rowNum })
@@ -1741,18 +1789,34 @@ DASHBOARD_HTML = """
             );
         }
 
-        // ── Toplu Kayıt Silme (Bulk Delete) ──
+        // ── Toplu Kayıt Seçme ve Silme (Bulk Delete) ──
+
+        function toggleSelectAllMaster(sheetId) {
+            const masterCb = document.getElementById("select-all-" + sheetId);
+            if (!masterCb) return;
+            masterCb.checked = !masterCb.checked;
+            toggleSelectAll(sheetId, masterCb);
+        }
 
         function toggleSelectAll(sheetId, masterCb) {
             const list = document.getElementById("list-" + sheetId);
             if (!list) return;
+            const isChecked = masterCb ? masterCb.checked : false;
             const cards = list.getElementsByClassName("data-card");
             for (let card of cards) {
                 if (card.style.display !== "none") {
-                    const cb = card.querySelector("input[type=checkbox]");
-                    if (cb) cb.checked = masterCb.checked;
+                    const cb = card.querySelector("input.record-cb") || card.querySelector("input[type=checkbox]");
+                    if (cb) cb.checked = isChecked;
                 }
             }
+            updateSelection(sheetId);
+            triggerHaptic("selection");
+        }
+
+        function toggleCardCheckbox(sheetId, rowIndex) {
+            const cb = document.getElementById("cb-" + sheetId + "-" + rowIndex);
+            if (!cb) return;
+            cb.checked = !cb.checked;
             updateSelection(sheetId);
         }
 
@@ -1763,20 +1827,37 @@ DASHBOARD_HTML = """
             let checkedCount = 0;
             let visibleCount = 0;
             for (let card of cards) {
-                const cb = card.querySelector("input[type=checkbox]");
+                const cb = card.querySelector("input.record-cb") || card.querySelector("input[type=checkbox]");
                 if (cb) {
                     visibleCount++;
-                    if (cb.checked) checkedCount++;
+                    if (cb.checked) {
+                        checkedCount++;
+                        card.classList.add("selected");
+                    } else {
+                        card.classList.remove("selected");
+                    }
                 }
             }
             const badge = document.getElementById("sel-badge-" + sheetId);
-            if (badge) badge.innerText = checkedCount + " seçildi";
+            if (badge) {
+                badge.innerText = checkedCount + " seçildi";
+                if (checkedCount > 0) {
+                    badge.style.background = "rgba(99,102,241,0.25)";
+                    badge.style.color = "#818cf8";
+                } else {
+                    badge.style.background = "rgba(255,255,255,0.08)";
+                    badge.style.color = "var(--hint-color)";
+                }
+            }
 
             const masterCb = document.getElementById("select-all-" + sheetId);
             if (masterCb) {
                 masterCb.checked = (visibleCount > 0 && checkedCount === visibleCount);
                 masterCb.indeterminate = (checkedCount > 0 && checkedCount < visibleCount);
             }
+
+            const tabCnt = document.getElementById("tab-cnt-" + sheetId);
+            if (tabCnt) tabCnt.innerText = visibleCount;
         }
 
         function bulkDeleteSelected(sheetId) {
@@ -1785,7 +1866,7 @@ DASHBOARD_HTML = """
             const cards = Array.from(list.getElementsByClassName("data-card")).filter(c => c.style.display !== "none");
             const checkedBoxes = [];
             for (let card of cards) {
-                const cb = card.querySelector("input[type=checkbox]");
+                const cb = card.querySelector("input.record-cb") || card.querySelector("input[type=checkbox]");
                 if (cb && cb.checked) {
                     checkedBoxes.push(cb);
                 }
@@ -1808,7 +1889,7 @@ DASHBOARD_HTML = """
                     const bar = document.getElementById("bulk-bar-" + sheetId);
                     if (bar) bar.style.opacity = "0.5";
 
-                    fetch("/api/bulk-delete-records", {
+                    apiFetch("/api/bulk-delete-records", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
@@ -1853,13 +1934,13 @@ DASHBOARD_HTML = """
             const list = document.getElementById("list-" + sheetId);
             const cards = list ? Array.from(list.getElementsByClassName("data-card")) : [];
             const allRowNums = cards.map(c => {
-                const cb = c.querySelector("input[type=checkbox]");
+                const cb = c.querySelector("input.record-cb") || c.querySelector("input[type=checkbox]");
                 return cb ? parseInt(cb.value) : null;
             }).filter(n => n !== null && !isNaN(n));
 
             showAppConfirm(
                 "⚠️ TÜM Dataları Sil",
-                "'" + (sheetName || "Bu tablo") + "' tablosundaki TÜM kayıtları sistemden ve Telegram grubundan tamamen silmek istediğinize emin misiniz?\n\nBu işlem geri alınamaz!",
+                "'" + (sheetName || "Bu tablo") + "' tablosundaki TÜM kayıtları sistemden ve Telegram grubundan tamamen silmek istediğinize emin misiniz?\\n\\nBu işlem geri alınamaz!",
                 "⚠️",
                 "Evet, Hepsini Sil",
                 true,
@@ -1867,7 +1948,7 @@ DASHBOARD_HTML = """
                     const bar = document.getElementById("bulk-bar-" + sheetId);
                     if (bar) bar.style.opacity = "0.5";
 
-                    fetch("/api/bulk-delete-records", {
+                    apiFetch("/api/bulk-delete-records", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
@@ -1887,9 +1968,15 @@ DASHBOARD_HTML = """
                                 list.innerHTML = '<div class="empty-box"><div class="e-icon">📭</div><p>Henüz kayıt bulunamadı</p></div>';
                             }
                             const badge = document.getElementById("sel-badge-" + sheetId);
-                            if (badge) badge.innerText = "0 seçildi";
+                            if (badge) {
+                                badge.innerText = "0 seçildi";
+                                badge.style.background = "rgba(255,255,255,0.08)";
+                                badge.style.color = "var(--hint-color)";
+                            }
                             const masterCb = document.getElementById("select-all-" + sheetId);
                             if (masterCb) { masterCb.checked = false; masterCb.indeterminate = false; }
+                            const tabCnt = document.getElementById("tab-cnt-" + sheetId);
+                            if (tabCnt) tabCnt.innerText = "0";
                         } else {
                             appAlert("Hata: " + (data.error || "Temizlenemedi"));
                         }
@@ -2157,28 +2244,6 @@ DASHBOARD_HTML = """
                 window.location.reload();
             }
         }
-
-        // Token'ı localStorage'dan alıp her API isteğine otomatik iliştir
-        (function() {
-            try {
-                const p = new URLSearchParams(window.location.search);
-                const t = p.get("token");
-                if (t) localStorage.setItem("tg_auth_token", t);
-                const token = localStorage.getItem("tg_auth_token");
-                if (token) {
-                    const origFetch = window.fetch;
-                    window.fetch = function(url, opts = {}) {
-                        opts.headers = opts.headers || {};
-                        if (opts.headers instanceof Headers) {
-                            opts.headers.set("X-Auth-Token", token);
-                        } else {
-                            opts.headers["X-Auth-Token"] = token;
-                        }
-                        return origFetch(url, opts);
-                    };
-                }
-            } catch(e){}
-        })();
     </script>
 </body>
 </html>
@@ -2518,6 +2583,8 @@ def api_delete_record():
 
     try:
         success, msg = delete_record(sheet_id, int(row_num))
+        if success:
+            clear_sheet_cache(sheet_id)
         return jsonify({"ok": success, "message": msg})
     except Exception as e:
         logger.error(f"Kayıt silme hatası: {e}")
@@ -2543,6 +2610,8 @@ def api_bulk_delete_records():
             delete_all=delete_all,
             delete_from_telegram=delete_tg
         )
+        if success:
+            clear_sheet_cache(sheet_id)
         return jsonify({"ok": success, "message": msg, "count": count})
     except Exception as e:
         logger.error(f"Toplu kayıt silme hatası: {e}", exc_info=True)

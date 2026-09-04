@@ -1234,9 +1234,7 @@ def bulk_delete_records(sheet_id: str, row_nums: list[int] = None, delete_all: b
         resolved_id = resolve_sheet_id(sheet_id) or sheet_id
         sheet_st = state.get(resolved_id) or state.get(sheet_id)
         if not sheet_st:
-            if delete_all:
-                return True, "Tabloda zaten silinecek kayıt yok.", 0
-            return False, "Tablo state bilgisi bulunamadı.", 0
+            sheet_st = state.setdefault(resolved_id, {"last_sent": 0, "messages": {}, "statuses": {}, "deleted": []})
 
         # Sheet chat_id'sini belirle
         target_chat = TELEGRAM_CHAT_ID
