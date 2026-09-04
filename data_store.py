@@ -17,6 +17,7 @@ from datetime import datetime
 import threading
 import logging
 import requests
+import pytz
 
 from config import (
     TELEGRAM_BOT_TOKEN,
@@ -25,6 +26,8 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+TURKEY_TZ = pytz.timezone("Europe/Istanbul")
 
 # Kalıcı Veri Klasörü (Railway Volume desteği: RAILWAY_VOLUME_MOUNT_PATH veya DATA_DIR veya /app/data)
 DATA_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.environ.get("DATA_DIR")
@@ -43,6 +46,7 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings_config.json")
 STATE_FILE = os.path.join(DATA_DIR, "sheets_state.json")
 CLIENTS_FILE = os.path.join(DATA_DIR, "clients_db.json")
 ACTIVITY_LOG_FILE = os.path.join(DATA_DIR, "activity_log.json")
+USERS_FILE = os.path.join(DATA_DIR, "users_db.json")
 STORE_LOCK = threading.Lock()
 
 
@@ -264,6 +268,157 @@ def get_dashboard_metrics(start_date_str: str = None, end_date_str: str = None) 
         "olumsuz_count": olumsuz_count,
         "cevapsiz_count": cevapsiz_count,
         "groups_list": list(groups_active)
+    }
+
+
+def record_user_interaction(user_id: int | str, username: str = "", full_name: str = "", action_type: str = "interaction", details: str = ""):
+    """Bota etkileşim veren kullanıcıyı ve yaptığı işlemi kayıt altına alır."""
+    if not user_id:
+        return
+    user_key = str(user_id)
+    u_name = f"@{username.lstrip('@')}" if username else ""
+    now_dt = datetime.now(TURKEY_TZ)
+    now_str = now_dt.strftime("%d/%m/%Y %H:%M:%S")
+
+    with STORE_LOCK:
+        users = {}
+        if os.path.exists(USERS_FILE):
+            try:
+                with open(USERS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        users = data
+            except Exception:
+                users = {}
+
+        if user_key not in users:
+            users[user_key] = {
+                "user_id": user_key,
+                "username": u_name,
+                "full_name": full_name,
+                "first_seen": now_str,
+                "last_seen": now_str,
+                "total_actions": 0,
+                "actions": {},
+                "recent_actions": []
+            }
+
+        usr = users[user_key]
+        if u_name:
+            usr["username"] = u_name
+        if full_name:
+            usr["full_name"] = full_name
+        usr["last_seen"] = now_str
+        usr["total_actions"] = usr.get("total_actions", 0) + 1
+
+        actions_map = usr.get("actions", {})
+        actions_map[action_type] = actions_map.get(action_type, 0) + 1
+        usr["actions"] = actions_map
+
+        recent = usr.get("recent_actions", [])
+        recent.insert(0, {
+            "type": action_type,
+            "details": details[:100] if details else "",
+            "time": now_str
+        })
+        usr["recent_actions"] = recent[:20]
+
+        atomic_save_json(USERS_FILE, users)
+
+
+def get_all_users() -> list[dict]:
+    """Tüm kayıtlı kullanıcıları ve etkileşim sayılarını döner."""
+    with STORE_LOCK:
+        if not os.path.exists(USERS_FILE):
+            return []
+        try:
+            with open(USERS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    user_list = list(data.values())
+                    user_list.sort(key=lambda x: x.get("total_actions", 0), reverse=True)
+                    return user_list
+        except Exception:
+            return []
+    return []
+
+
+def get_today_summary() -> dict:
+    """Gün içinde gerçekleşen tüm hareketlerin ve etkileşim verenlerin özetini döner."""
+    now_dt = datetime.now(TURKEY_TZ)
+    today_str = now_dt.strftime("%Y-%m-%d")
+
+    with STORE_LOCK:
+        events = []
+        if os.path.exists(ACTIVITY_LOG_FILE):
+            try:
+                with open(ACTIVITY_LOG_FILE, "r", encoding="utf-8") as f:
+                    events = json.load(f)
+            except Exception:
+                events = []
+
+    # Bugün gerçekleşen olayları filtrele
+    today_events = [e for e in events if e.get("date") == today_str or (e.get("time") and not e.get("date"))]
+    today_events.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+
+    # İstatistikler
+    kredi_events = [e for e in today_events if e.get("type") == "kredi"]
+    onay_events = [e for e in today_events if e.get("type") == "onay"]
+    bloke_events = [e for e in today_events if e.get("type") == "bloke"]
+    olumsuz_events = [e for e in today_events if e.get("type") in ("olumsuz", "kacti")]
+    cevapsiz_events = [e for e in today_events if e.get("type") == "cevapsiz"]
+    forward_events = [e for e in today_events if e.get("type") == "forward"]
+
+    # Kullanıcı bazında bugün kaç işlem yapıldı
+    user_counts = {}
+    for e in today_events:
+        uname = e.get("user_name") or "Bilinmeyen"
+        user_counts[uname] = user_counts.get(uname, 0) + 1
+
+    top_users = sorted(user_counts.items(), key=lambda x: x[1], reverse=True)
+
+    # Formatlanmış son olaylar (akış için)
+    feed = []
+    type_labels = {
+        "kredi": ("💳 Kredi Düştü", "#facc15"),
+        "onay": ("✅ Onaylandı", "#4ade80"),
+        "bloke": ("🚫 Bloke Oldu", "#ef4444"),
+        "olumsuz": ("🔴 Olumsuz", "#ef4444"),
+        "kacti": ("❌ İşlem Kaçtı", "#f97316"),
+        "cevapsiz": ("📵 Cevapsız", "#94a3b8"),
+        "forward": ("↪️ Gruba Aktarıldı", "#38bdf8"),
+        "finish": ("🏁 İşlem Bitti", "#10b981"),
+        "note": ("📝 Not Eklendi", "#a855f7"),
+    }
+
+    for e in today_events[:30]:
+        etype = e.get("type", "")
+        lbl, color = type_labels.get(etype, (etype.capitalize(), "#94a3b8"))
+        feed.append({
+            "time": e.get("time", ""),
+            "type_label": lbl,
+            "type_color": color,
+            "user": e.get("user_name", "Temsilci"),
+            "row_num": e.get("row_num", 0),
+            "sheet_id": e.get("sheet_id", ""),
+            "amount": e.get("amount", 0.0),
+            "group": e.get("group_name", ""),
+            "extra": e.get("extra", "")
+        })
+
+    return {
+        "today_date": now_dt.strftime("%d.%m.%Y"),
+        "total_actions": len(today_events),
+        "kredi_count": len(kredi_events),
+        "kredi_amt": sum(e.get("amount", 0.0) for e in kredi_events),
+        "onay_count": len(onay_events),
+        "onay_amt": sum(e.get("amount", 0.0) for e in onay_events),
+        "bloke_count": len(bloke_events),
+        "olumsuz_count": len(olumsuz_events),
+        "cevapsiz_count": len(cevapsiz_events),
+        "forward_count": len(forward_events),
+        "top_users": top_users,
+        "feed": feed
     }
 
 

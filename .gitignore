@@ -33,4 +33,6 @@ groups_config.json
 settings_config.json
 activity_log.json
 data_events.json
+users_db.json
 *.log
+

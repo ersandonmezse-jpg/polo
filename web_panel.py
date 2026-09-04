@@ -44,6 +44,8 @@ from data_store import (
     get_dashboard_metrics,
     get_record_global_id,
     get_main_chat_id,
+    get_today_summary,
+    get_all_users,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -1004,6 +1006,69 @@ DASHBOARD_HTML = """
             </div>
         </div>
 
+        <!-- Günlük Canlı Özet & Hareket Akışı (Mini App Özel) -->
+        <div class="today-summary-box" style="margin-bottom:16px; background:var(--card-bg); border:1px solid var(--border-color); border-radius:14px; padding:14px; box-shadow:0 2px 8px rgba(0,0,0,0.15);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; cursor:pointer;" onclick="toggleDailySummary()">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:16px;">⚡</span>
+                    <h3 style="margin:0; font-size:14px; font-weight:700; color:var(--text-color);">Günün Özeti & Canlı Hareketler ({{ today_summary.today_date }})</h3>
+                    <span style="font-size:11px; background:rgba(56,189,248,0.15); color:#38bdf8; padding:2px 6px; border-radius:10px; font-weight:600;">{{ today_summary.total_actions }} Olay</span>
+                </div>
+                <span id="daily-summary-icon" style="font-size:12px; color:var(--hint-color);">▼</span>
+            </div>
+
+            <div id="daily-summary-body">
+                <!-- Hızlı Rozetler -->
+                <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
+                    <span style="font-size:11px; padding:4px 8px; border-radius:8px; background:rgba(250,204,21,0.12); color:#facc15; border:1px solid rgba(250,204,21,0.25);">
+                        💳 <b>{{ today_summary.kredi_count }} Kredi</b> ({{ "{:,.0f}".format(today_summary.kredi_amt or 0) }} TL)
+                    </span>
+                    <span style="font-size:11px; padding:4px 8px; border-radius:8px; background:rgba(74,222,128,0.12); color:#4ade80; border:1px solid rgba(74,222,128,0.25);">
+                        ✅ <b>{{ today_summary.onay_count }} Onay</b> ({{ "{:,.0f}".format(today_summary.onay_amt or 0) }} TL)
+                    </span>
+                    <span style="font-size:11px; padding:4px 8px; border-radius:8px; background:rgba(56,189,248,0.12); color:#38bdf8; border:1px solid rgba(56,189,248,0.25);">
+                        ↪️ <b>{{ today_summary.forward_count }} Aktarım</b>
+                    </span>
+                    <span style="font-size:11px; padding:4px 8px; border-radius:8px; background:rgba(239,68,68,0.12); color:#ef4444; border:1px solid rgba(239,68,68,0.25);">
+                        🚫 <b>{{ today_summary.bloke_count }} Bloke</b> / 🔴 <b>{{ today_summary.olumsuz_count }} Olumsuz</b>
+                    </span>
+                </div>
+
+                <!-- Aktif Kullanıcılar -->
+                {% if today_summary.top_users %}
+                <div style="margin-bottom:10px; font-size:12px; color:var(--text-color); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                    <span style="color:var(--hint-color); font-weight:600;">👷 Bugün Etkileşim Verenler:</span>
+                    {% for uname, cnt in today_summary.top_users %}
+                    <span style="background:rgba(255,255,255,0.06); padding:2px 8px; border-radius:6px; border:1px solid var(--border-color); font-size:11px;">
+                        <b>{{ uname }}</b> <span style="color:#38bdf8;">({{ cnt }} işlem)</span>
+                    </span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                <!-- Canlı Hareket Akışı (Son Olaylar) -->
+                <div style="max-height:180px; overflow-y:auto; display:flex; flex-direction:column; gap:4px; padding-right:4px;">
+                    {% if today_summary.feed %}
+                        {% for ev in today_summary.feed %}
+                        <div style="display:flex; justify-content:space-between; align-items:center; font-size:11px; background:rgba(0,0,0,0.15); padding:4px 8px; border-radius:6px; border-left:3px solid {{ ev.type_color }};">
+                            <div style="display:flex; align-items:center; gap:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                <span style="color:var(--hint-color); font-family:monospace;">{{ ev.time }}</span>
+                                <span style="font-weight:700; color:{{ ev.type_color }};">{{ ev.type_label }}</span>
+                                {% if ev.row_num %}<span style="color:var(--hint-color);">#{{ ev.row_num }}</span>{% endif %}
+                                {% if ev.amount %}<span style="color:#facc15; font-weight:600;">({{ "{:,.0f}".format(ev.amount) }} TL)</span>{% endif %}
+                                {% if ev.group %}<span style="color:#38bdf8;">➡️ {{ ev.group }}</span>{% endif %}
+                                {% if ev.extra %}<span style="color:var(--hint-color); font-style:italic;">({{ ev.extra }})</span>{% endif %}
+                            </div>
+                            <span style="font-weight:600; color:var(--text-color); margin-left:8px; white-space:nowrap;">{{ ev.user }}</span>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <div style="font-size:12px; color:var(--hint-color); font-style:italic; padding:6px 0;">Henüz gün içinde kaydedilen bir hareket yok.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
         <!-- Sheet Tabs -->
         <div class="tabs-scroller">
             {% for sheet in sheets %}
@@ -1202,6 +1267,19 @@ DASHBOARD_HTML = """
         function triggerHaptic(type = "light") {
             if (window.Telegram && Telegram.WebApp && Telegram.WebApp.HapticFeedback) {
                 Telegram.WebApp.HapticFeedback.notificationOccurred(type === "success" ? "success" : "warning");
+            }
+        }
+
+        function toggleDailySummary() {
+            const el = document.getElementById("daily-summary-body");
+            const icon = document.getElementById("daily-summary-icon");
+            if (!el) return;
+            if (el.style.display === "none") {
+                el.style.display = "block";
+                if (icon) icon.textContent = "▼";
+            } else {
+                el.style.display = "none";
+                if (icon) icon.textContent = "▶";
             }
         }
 
@@ -1603,6 +1681,8 @@ def dashboard():
         sheets_data.append(sheet_info)
 
     all_groups = get_groups()
+    today_summary = get_today_summary()
+    all_users = get_all_users()
 
     return render_template_string(
         DASHBOARD_HTML,
@@ -1614,6 +1694,8 @@ def dashboard():
         all_groups=all_groups,
         kpi=kpi,
         active_filter=filter_mode,
+        today_summary=today_summary,
+        all_users=all_users,
     )
 
 

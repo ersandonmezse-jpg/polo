@@ -72,6 +72,7 @@ from data_store import (
     save_client_profile,
     check_client_history,
     log_activity_event,
+    record_user_interaction,
 )
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -391,7 +392,10 @@ def listen_telegram_updates():
                     cq_data = cq.get("data", "")
                     from_user = cq.get("from", {})
                     user_id = from_user.get("id")
-                    user_tag = f"@{from_user.get('username')}" if from_user.get("username") else (from_user.get("first_name") or "Temsilci")
+                    username = from_user.get("username") or ""
+                    full_name = f"{from_user.get('first_name', '')} {from_user.get('last_name', '')}".strip()
+                    user_tag = f"@{username}" if username else (full_name or "Temsilci")
+                    record_user_interaction(user_id, username, full_name, action_type=cq_data.split(":")[0], details=cq_data)
                     msg = cq.get("message")
                     if not msg:
                         continue
@@ -885,11 +889,29 @@ def listen_telegram_updates():
                         row_num = int(parts[2])
                         groups = get_groups()
 
+                        clean_orig = original_text.split("\n\n<i>↪️")[0].split("\n\n⚠️")[0].split("\n\n❓")[0]
+
                         if not groups:
                             answer_callback_query(
                                 cq_id,
-                                "⚠️ Henüz aktarılacak hedef grup eklenmemiş!\nLütfen önce aktarmak istediğiniz grupta /grup_ekle [Grup Adı] yazın veya panelden grup ekleyin.",
-                                show_alert=True
+                                "⚠️ Henüz aktarılacak bir hedef grup eklenmemiş.",
+                                show_alert=False
+                            )
+                            # Mesaj kartını bilgilendirici ve tek tıkla grup ekleme butonuyla güncelle
+                            no_group_kb = {
+                                "inline_keyboard": [
+                                    [{"text": "➕ Bu Grubu İşlem Grubu Yap", "callback_data": f"fwd_add_here:{sheet_id}:{row_num}"}],
+                                    [{"text": "❌ İptal / Geri", "callback_data": f"fwd_cancel:{sheet_id}:{row_num}"}]
+                                ]
+                            }
+                            edit_telegram_message(
+                                chat_id, message_id,
+                                html.escape(clean_orig) +
+                                "\n\n⚠️ <b>Aktarılacak İşlem Grubu Bulunamadı!</b>\n"
+                                "<i>Kayıtları aktarabilmek için bir işlem grubu tanımlı olmalıdır.\n"
+                                "• Aşağıdaki butona basarak bu grubu işlem grubu yapabilir,\n"
+                                "• Veya hedef grupta <code>/grup_ekle [Grup Adı]</code> yazabilirsiniz.</i>",
+                                reply_markup=no_group_kb
                             )
                         else:
                             group_buttons = []
@@ -898,13 +920,34 @@ def listen_telegram_updates():
 
                             group_buttons.append([{"text": "❌ İptal", "callback_data": f"fwd_cancel:{sheet_id}:{row_num}"}])
 
-                            clean_orig = original_text.split("\n\n<i>↪️")[0]
                             answer_callback_query(cq_id)
                             edit_telegram_message(
                                 chat_id, message_id,
                                 html.escape(clean_orig) + "\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>",
                                 reply_markup={"inline_keyboard": group_buttons}
                             )
+
+                    # 1.7.B) Tek Tıkla Bu Grubu Hedef Grup Yap
+                    elif cq_data.startswith("fwd_add_here:"):
+                        parts = cq_data.split(":")
+                        sheet_id = parts[1]
+                        row_num = int(parts[2])
+                        chat_title = (msg.get("chat") or {}).get("title") or "İşlem Grubu"
+                        add_group(chat_title, str(chat_id))
+                        answer_callback_query(cq_id, f"✅ '{chat_title}' işlem grubu olarak eklendi!", show_alert=True)
+
+                        groups = get_groups()
+                        group_buttons = []
+                        for g in groups:
+                            group_buttons.append([{"text": f"👥 {g['name']}", "callback_data": f"fwd_sel:{sheet_id}:{row_num}:{g['id']}"}])
+                        group_buttons.append([{"text": "❌ İptal", "callback_data": f"fwd_cancel:{sheet_id}:{row_num}"}])
+
+                        clean_orig = original_text.split("\n\n<i>↪️")[0].split("\n\n⚠️")[0].split("\n\n❓")[0]
+                        edit_telegram_message(
+                            chat_id, message_id,
+                            html.escape(clean_orig) + "\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>",
+                            reply_markup={"inline_keyboard": group_buttons}
+                        )
 
                     # 1.8) Hedef Grup Seçildi -> Onay Adımı
                     elif cq_data.startswith("fwd_sel:"):
@@ -926,7 +969,7 @@ def listen_telegram_updates():
                                 ]
                             ]
                         }
-                        clean_orig = original_text.replace("\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>", "").split("\n\n❓")[0]
+                        clean_orig = original_text.replace("\n\n<i>↪️ Hangi gruba aktarmak istiyorsunuz?</i>", "").split("\n\n❓")[0].split("\n\n⚠️")[0]
                         answer_callback_query(cq_id)
                         edit_telegram_message(
                             chat_id, message_id,
@@ -945,7 +988,7 @@ def listen_telegram_updates():
                         groups = get_groups()
                         target_name = next((g["name"] for g in groups if str(g["id"]) == target_chat_id), "Hedef Grup")
 
-                        clean_lead_text = original_text.split("\n\n❓")[0].split("\n\n<i>↪️")[0]
+                        clean_lead_text = original_text.split("\n\n❓")[0].split("\n\n<i>↪️")[0].split("\n\n⚠️")[0]
 
                         success, target_msg_id = send_telegram_message(
                             html.escape(clean_lead_text) + f"\n\n<i>(Aktaran: {html.escape(user_tag)})</i>",
@@ -953,18 +996,31 @@ def listen_telegram_updates():
                             reply_markup=build_record_keyboard(sheet_id, row_num, is_forwarded=True)
                         )
 
-                        # Aktarım olayını, hedef grup ve mesaj ID'sini kaydet (Geri çekme ve süre analizi için)
-                        if target_msg_id:
+                        if success and target_msg_id:
+                            # Aktarım olayını kaydet (Geri çekme ve süre analizi için)
                             record_forward_event(sheet_id, row_num, target_chat_id, target_name, target_msg_id, user_tag)
+                            log_activity_event("forward", sheet_id, row_num, group_name=target_name, user_name=user_tag)
 
-                        now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
-                        updated_orig = (
-                            f"{html.escape(clean_lead_text)}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"↪️ <b>{html.escape(target_name)}</b> grubuna aktarıldı ({html.escape(user_tag)} - {now_time})"
-                        )
-                        answer_callback_query(cq_id, f"Kayıt {target_name} grubuna aktarıldı! ✅", show_alert=True)
-                        edit_telegram_message(chat_id, message_id, updated_orig, reply_markup=build_record_keyboard(sheet_id, row_num))
+                            now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
+                            updated_orig = (
+                                f"{html.escape(clean_lead_text)}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"↪️ <b>{html.escape(target_name)}</b> grubuna aktarıldı ({html.escape(user_tag)} - {now_time})"
+                            )
+                            answer_callback_query(cq_id, f"Kayıt {target_name} grubuna aktarıldı! ✅", show_alert=True)
+                            edit_telegram_message(chat_id, message_id, updated_orig, reply_markup=build_record_keyboard(sheet_id, row_num))
+                        else:
+                            answer_callback_query(
+                                cq_id,
+                                f"❌ HATA: Kayıt '{target_name}' grubuna iletilemedi!\nLütfen botun hedef grupta yönetici olduğunu kontrol ediniz.",
+                                show_alert=True
+                            )
+                            # Kartı bilgilendirmeyle orijinal butonlarına döndür
+                            edit_telegram_message(
+                                chat_id, message_id,
+                                html.escape(clean_lead_text) + f"\n\n⚠️ <i>{html.escape(target_name)} grubuna aktarım başarısız oldu. Lütfen bot yetkilerini kontrol edip tekrar deneyin.</i>",
+                                reply_markup=build_record_keyboard(sheet_id, row_num)
+                            )
 
                     # 1.10) İptal Et
                     elif cq_data.startswith("fwd_cancel:"):
@@ -985,11 +1041,14 @@ def listen_telegram_updates():
                         continue
                     from_user = msg.get("from") or {}
                     user_id = from_user.get("id") or msg.get("chat", {}).get("id")
-                    user_tag = f"@{from_user.get('username')}" if from_user.get("username") else (from_user.get("first_name") or "Temsilci")
+                    username = from_user.get("username") or ""
+                    full_name = f"{from_user.get('first_name', '')} {from_user.get('last_name', '')}".strip()
+                    user_tag = f"@{username}" if username else (full_name or "Temsilci")
                     from_chat_id = msg["chat"]["id"]
 
                     # Komutlardaki bot username etiketini temizle (Örn: /help@palamutarmutbot -> /help)
                     if text.startswith("/"):
+                        record_user_interaction(user_id, username, full_name, action_type="command", details=text.split()[0])
                         first_word = text.split()[0]
                         if "@" in first_word:
                             clean_cmd = first_word.split("@")[0]
