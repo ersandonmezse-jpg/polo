@@ -99,13 +99,27 @@ TARGET_COLUMNS = [
 # ── Sheet Yardımcıları ──────────────────────────────────────────────────────
 
 def fetch_sheet_data(sheet_id: str) -> list[dict]:
-    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-    response = requests.get(csv_url, timeout=30)
-    response.raise_for_status()
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    urls = [
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv",
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
+    ]
+    last_err = None
+    for csv_url in urls:
+        for attempt in range(2):
+            try:
+                response = requests.get(csv_url, headers=headers, timeout=20)
+                if response.status_code == 200 and response.content:
+                    content = response.content.decode("utf-8-sig")
+                    reader = csv.DictReader(io.StringIO(content))
+                    return list(reader)
+            except Exception as e:
+                last_err = e
+                time.sleep(1)
+    if last_err:
+        raise last_err
+    return []
 
-    content = response.content.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(content))
-    return list(reader)
 
 
 def normalize_tr(text: str) -> str:
@@ -329,14 +343,25 @@ def send_telegram_message(text: str, chat_id: str = None, reply_markup: dict = N
             if data.get("ok"):
                 msg_id = data.get("result", {}).get("message_id")
                 return True, msg_id
-            elif reply_markup and data.get("error_code") == 400:
-                # Eger buton/URL hatasi varsa butonsuz hemen tekrar dene
-                payload.pop("reply_markup", None)
-                res2 = requests.post(url, json=payload, timeout=15)
-                d2 = res2.json()
-                if d2.get("ok"):
-                    return True, d2.get("result", {}).get("message_id")
-                logger.error(f"Telegram API hatası (butonsuz deneme): {d2}")
+            elif data.get("error_code") == 400:
+                desc = data.get("description", "").lower()
+                logger.warning(f"Telegram API 400 Hatası: {data.get('description')}")
+                if "entity" in desc or "tag" in desc or "parse" in desc:
+                    # HTML etiket hatası: parse_mode kaldır, butonları koruyarak tekrar dene
+                    payload.pop("parse_mode", None)
+                    res2 = requests.post(url, json=payload, timeout=15)
+                    d2 = res2.json()
+                    if d2.get("ok"):
+                        return True, d2.get("result", {}).get("message_id")
+                    logger.error(f"Telegram API hatası (parse_mode kaldırılmış deneme): {d2}")
+                elif reply_markup:
+                    # Buton verisi hatası: butonsuz tekrar dene
+                    payload.pop("reply_markup", None)
+                    res2 = requests.post(url, json=payload, timeout=15)
+                    d2 = res2.json()
+                    if d2.get("ok"):
+                        return True, d2.get("result", {}).get("message_id")
+                    logger.error(f"Telegram API hatası (butonsuz deneme): {d2}")
                 return False, None
             elif data.get("error_code") == 429:
                 retry_after = data.get("parameters", {}).get("retry_after", 15)
