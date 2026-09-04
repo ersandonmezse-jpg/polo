@@ -75,11 +75,25 @@ TARGET_COLUMNS = [
 # ── Yardımcı Fonksiyonlar ───────────────────────────────────────────────────
 
 def fetch_sheet_data(sheet_id: str) -> list[dict]:
-    csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-    response = requests.get(csv_url, timeout=30)
-    response.raise_for_status()
-    content = response.content.decode("utf-8-sig")
-    return list(csv.DictReader(io.StringIO(content)))
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    urls = [
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv",
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv"
+    ]
+    last_err = None
+    for csv_url in urls:
+        for attempt in range(2):
+            try:
+                response = requests.get(csv_url, headers=headers, timeout=20)
+                if response.status_code == 200 and response.content:
+                    content = response.content.decode("utf-8-sig")
+                    return list(csv.DictReader(io.StringIO(content)))
+            except Exception as e:
+                last_err = e
+                time.sleep(1)
+    if last_err:
+        raise last_err
+    return []
 
 
 def normalize_tr(text: str) -> str:
@@ -95,18 +109,42 @@ def normalize_tr(text: str) -> str:
 
 def find_column_mapping(headers: list[str]) -> dict[str, str]:
     mapping = {}
-    for header in headers:
-        norm = normalize_tr(header)
-        if "created" in norm or "tarih" in norm or "zaman" in norm:
-            mapping.setdefault("created_time", header)
-        elif "calisma" in norm or "meslek" in norm or "durum" in norm:
-            mapping.setdefault("çalışma_durumu", header)
-        elif "tc" in norm or "kimlik" in norm:
-            mapping.setdefault("t.c_numaranız", header)
-        elif "limit" in norm or "kart" in norm:
-            mapping.setdefault("kullanılabilir_kart_limitiniz", header)
-        elif "telefon" in norm or "phone" in norm or "tel" in norm or "gsm" in norm or "mobile" in norm:
-            mapping.setdefault("phone_number", header)
+    normalized = [(h, normalize_tr(h)) for h in headers]
+
+    # 1. Kart Limiti (Kesinlikle 'limit' içeren kolonlar önceliklidir; 'kullanıyor musunuz' gibi soru kolonları hariç tutulur)
+    for h, norm in normalized:
+        if "limit" in norm:
+            mapping["kullanılabilir_kart_limitiniz"] = h
+            break
+    if "kullanılabilir_kart_limitiniz" not in mapping:
+        for h, norm in normalized:
+            if "kart" in norm and not any(skip in norm for skip in ["kullaniyor", "misiniz", "musunuz", "var_mi", "sahibi", "hesap"]):
+                mapping["kullanılabilir_kart_limitiniz"] = h
+                break
+
+    # 2. Telefon Numarası
+    for h, norm in normalized:
+        if any(k in norm for k in ["telefon", "phone", "gsm", "mobile"]) or norm == "tel":
+            mapping["phone_number"] = h
+            break
+
+    # 3. T.C. Kimlik
+    for h, norm in normalized:
+        if any(k in norm for k in ["tc_no", "tc_numara", "tckn", "kimlik"]) or "tc" in norm.split("_"):
+            mapping["t.c_numaranız"] = h
+            break
+
+    # 4. Çalışma Durumu
+    for h, norm in normalized:
+        if any(k in norm for k in ["calisma", "meslek", "durum"]):
+            mapping["çalışma_durumu"] = h
+            break
+
+    # 5. Kayıt Tarihi
+    for h, norm in normalized:
+        if any(k in norm for k in ["created", "tarih", "zaman"]):
+            mapping["created_time"] = h
+            break
 
     return mapping
 

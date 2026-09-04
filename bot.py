@@ -135,23 +135,42 @@ def normalize_tr(text: str) -> str:
 
 def find_column_mapping(headers: list[str]) -> dict[str, str]:
     mapping = {}
-    for header in headers:
-        norm = normalize_tr(header)
-        # 1) Tarih
-        if "created" in norm or "tarih" in norm or "zaman" in norm:
-            mapping.setdefault("created_time", header)
-        # 2) Çalışma Durumu
-        elif "calisma" in norm or "meslek" in norm or "durum" in norm:
-            mapping.setdefault("çalışma_durumu", header)
-        # 3) TC Kimlik
-        elif "tc" in norm or "kimlik" in norm:
-            mapping.setdefault("t.c_numaranız", header)
-        # 4) Kart Limiti
-        elif "limit" in norm or "kart" in norm:
-            mapping.setdefault("kullanılabilir_kart_limitiniz", header)
-        # 5) Telefon Numarası
-        elif "telefon" in norm or "phone" in norm or "tel" in norm or "gsm" in norm or "mobile" in norm:
-            mapping.setdefault("phone_number", header)
+    normalized = [(h, normalize_tr(h)) for h in headers]
+
+    # 1. Kart Limiti (Kesinlikle 'limit' içeren kolonlar önceliklidir; 'kullanıyor musunuz' gibi soru kolonları hariç tutulur)
+    for h, norm in normalized:
+        if "limit" in norm:
+            mapping["kullanılabilir_kart_limitiniz"] = h
+            break
+    if "kullanılabilir_kart_limitiniz" not in mapping:
+        for h, norm in normalized:
+            if "kart" in norm and not any(skip in norm for skip in ["kullaniyor", "misiniz", "musunuz", "var_mi", "sahibi", "hesap"]):
+                mapping["kullanılabilir_kart_limitiniz"] = h
+                break
+
+    # 2. Telefon Numarası
+    for h, norm in normalized:
+        if any(k in norm for k in ["telefon", "phone", "gsm", "mobile"]) or norm == "tel":
+            mapping["phone_number"] = h
+            break
+
+    # 3. T.C. Kimlik
+    for h, norm in normalized:
+        if any(k in norm for k in ["tc_no", "tc_numara", "tckn", "kimlik"]) or "tc" in norm.split("_"):
+            mapping["t.c_numaranız"] = h
+            break
+
+    # 4. Çalışma Durumu
+    for h, norm in normalized:
+        if any(k in norm for k in ["calisma", "meslek", "durum"]):
+            mapping["çalışma_durumu"] = h
+            break
+
+    # 5. Kayıt Tarihi
+    for h, norm in normalized:
+        if any(k in norm for k in ["created", "tarih", "zaman"]):
+            mapping["created_time"] = h
+            break
 
     return mapping
 
