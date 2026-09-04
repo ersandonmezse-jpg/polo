@@ -2065,12 +2065,26 @@ def _check_bot_alive():
 
 @app.route("/api/bot-status", methods=["GET"])
 def api_bot_status():
-    threads = [t.name for t in threading.enumerate()]
+    import sys
+    import traceback
+    frames = sys._current_frames()
+    threads_info = []
+    for t in threading.enumerate():
+        f = frames.get(t.ident)
+        stk = "".join(traceback.format_stack(f)) if f else "no_frame"
+        # sadece son 3 satırı alarak kompakt tut
+        stk_lines = stk.strip().split("\n")[-4:]
+        threads_info.append({
+            "name": t.name,
+            "ident": t.ident,
+            "alive": t.is_alive(),
+            "location": " -> ".join([l.strip() for l in stk_lines if l.strip()])
+        })
     return jsonify({
         "ok": True,
         "bot_started": _bot_started,
         "pid": os.getpid(),
-        "threads": threads,
+        "threads": threads_info,
         "time": datetime.now(TURKEY_TZ).strftime("%d/%m/%Y %H:%M:%S")
     })
 

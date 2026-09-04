@@ -48,7 +48,7 @@ STATE_FILE = os.path.join(DATA_DIR, "sheets_state.json")
 CLIENTS_FILE = os.path.join(DATA_DIR, "clients_db.json")
 ACTIVITY_LOG_FILE = os.path.join(DATA_DIR, "activity_log.json")
 USERS_FILE = os.path.join(DATA_DIR, "users_db.json")
-STORE_LOCK = threading.Lock()
+STORE_LOCK = threading.RLock()
 
 
 def atomic_save_json(filepath: str, data: dict | list):

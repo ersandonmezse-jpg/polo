@@ -1820,7 +1820,7 @@ def listen_telegram_updates():
 
 # ── Sheet Kontrol Döngüsü ───────────────────────────────────────────────────
 
-TRANSFER_LOCK = threading.Lock()
+TRANSFER_LOCK = threading.RLock()
 
 
 def run_sheets_transfer(sheets_list: list[dict], target_chat: str = None, force_resend: bool = False):
