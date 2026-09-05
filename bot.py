@@ -39,6 +39,15 @@ from config import (
     TELEGRAM_CHAT_ID,
     CHECK_INTERVAL,
     PUBLIC_URL,
+    AUTO_ENRICH_LEADS,
+)
+from db_manager import (
+    search_by_tc,
+    search_by_gsm,
+    test_db_connection,
+    format_tc_card,
+    enrich_lead,
+    format_lead_enrichment_html,
 )
 from data_store import (
     get_sheets,
@@ -312,6 +321,16 @@ def format_message(entry_number: int, row: dict, col_mapping: dict, sheet_name: 
         "created_time": created_time
     }, status="Yeni Başvuru")
 
+    # Otomatik TC/Kişi Zenginleştirme (Ayrıyeten sorgu çekilmeden doğrudan karta gömülür)
+    db_enrich_line = ""
+    if AUTO_ENRICH_LEADS:
+        try:
+            person = enrich_lead(tc_raw=tc_no, phone_raw=phone)
+            if person:
+                db_enrich_line = format_lead_enrichment_html(person)
+        except Exception as e:
+            logger.debug(f"Lead zenginleştirme hatası: {e}")
+
     message = (
         f"{warning_banner}"
         f"📋 <b>Kayıt #{entry_number}</b> — <i>{html.escape(sheet_name)}</i>\n"
@@ -320,7 +339,8 @@ def format_message(entry_number: int, row: dict, col_mapping: dict, sheet_name: 
         f"💼 <b>Çalışma Durumu:</b> {calisma_durumu}\n"
         f"🆔 <b>T.C. Numarası:</b> <code>{tc_no}</code>\n"
         f"💳 <b>Kart Limiti:</b> {kart_limit}\n"
-        f"📞 <b>Telefon:</b> <code>{phone}</code>\n"
+        f"📞 <b>Telefon:</b> <code>{phone}</code>"
+        f"{db_enrich_line}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━"
     )
     if status_note:
@@ -1950,6 +1970,43 @@ def listen_telegram_updates():
                             send_telegram_message("📱 <b>Telegram Mini App Paneli:</b>\n\nAşağıdaki butona dokunarak paneli doğrudan Telegram içinde açabilirsiniz:", chat_id=from_chat_id, reply_markup=markup)
                         else:
                             send_telegram_message("Telegram Mini App adresi henüz ayarlanmamış.", chat_id=from_chat_id)
+
+                    # /tc veya /sorgu Komutu (VPS Veritabanı Sorgusu)
+                    elif base_cmd in ["/tc", "/sorgu", "tc", "sorgu"]:
+                        parts = text.split(maxsplit=1)
+                        if len(parts) > 1 and parts[1].strip():
+                            tc_query = parts[1].strip()
+                            send_telegram_message("🔍 <i>Veritabanında T.C. sorgulanıyor...</i>", chat_id=from_chat_id)
+                            res = search_by_tc(tc_query)
+                            if res:
+                                card = format_tc_card(res)
+                                send_telegram_message(card, chat_id=from_chat_id)
+                            else:
+                                send_telegram_message(f"❌ <code>{html.escape(tc_query)}</code> numaralı TC kaydı bulunamadı.", chat_id=from_chat_id)
+                        else:
+                            send_telegram_message("ℹ️ Lütfen sorgulamak istediğiniz TC numarasını girin.\nÖrnek: <code>/tc 12345678901</code>", chat_id=from_chat_id)
+
+                    # /gsm Komutu (Telefon Numarası Sorgusu)
+                    elif base_cmd in ["/gsm", "/tel", "gsm", "tel"]:
+                        parts = text.split(maxsplit=1)
+                        if len(parts) > 1 and parts[1].strip():
+                            gsm_query = parts[1].strip()
+                            send_telegram_message("🔍 <i>Veritabanında GSM sorgulanıyor...</i>", chat_id=from_chat_id)
+                            res = search_by_gsm(gsm_query)
+                            if res:
+                                card = format_tc_card(res)
+                                send_telegram_message(card, chat_id=from_chat_id)
+                            else:
+                                send_telegram_message(f"❌ <code>{html.escape(gsm_query)}</code> numarasına ait kayıt bulunamadı.", chat_id=from_chat_id)
+                        else:
+                            send_telegram_message("ℹ️ Lütfen sorgulamak istediğiniz telefon numarasını girin.\nÖrnek: <code>/gsm 05321234567</code>", chat_id=from_chat_id)
+
+                    # /db_durum Komutu (VPS Bağlantı Testi)
+                    elif base_cmd in ["/db_durum", "/db_test", "/db", "db"]:
+                        send_telegram_message("⏳ <i>VPS Veritabanı bağlantısı test ediliyor...</i>", chat_id=from_chat_id)
+                        ok, msg = test_db_connection()
+                        status_icon = "🟢" if ok else "🔴"
+                        send_telegram_message(f"{status_icon} <b>VPS Veritabanı Durumu:</b>\n\n{html.escape(msg)}", chat_id=from_chat_id)
 
         except Exception as e:
             logger.error(f"Update dinleme hatası: {e}", exc_info=True)

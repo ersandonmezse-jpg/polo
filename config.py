@@ -37,3 +37,11 @@ if not PUBLIC_URL:
 if PUBLIC_URL and not PUBLIC_URL.startswith(("http://", "https://")):
     PUBLIC_URL = f"https://{PUBLIC_URL}"
 
+# ── VPS / MySQL Veritabanı ───────────────────────────────────────────────────
+DB_HOST = os.environ.get("DB_HOST", "2.56.118.239").strip()
+DB_PORT = int(os.environ.get("DB_PORT", "3306"))
+DB_USER = os.environ.get("DB_USER", "botkullanici").strip()
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "BotPass1453").strip()
+DB_NAME = os.environ.get("DB_NAME", "tcdb").strip()
+AUTO_ENRICH_LEADS = os.environ.get("AUTO_ENRICH_LEADS", "true").lower() in ("true", "1", "yes")
+

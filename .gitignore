@@ -36,4 +36,8 @@ data_events.json
 users_db.json
 short_sheets.json
 *.log
+tcpro/
+*.MYD
+*.MYI
+*.frm
 
