@@ -1283,17 +1283,17 @@ DASHBOARD_HTML = """
             <!-- Toplu İşlem Çubuğu (Bulk Action Toolbar) -->
             <div class="bulk-toolbar" id="bulk-bar-{{ sheet.id }}" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; background:var(--card-bg); border:1px solid var(--border-color); border-radius:10px; padding:8px 12px; margin-bottom:10px; font-size:12px;">
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <div class="select-all-btn" onclick="toggleSelectAllMaster('{{ sheet.id }}')" style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; background:rgba(255,255,255,0.06); padding:6px 12px; border-radius:8px; border:1px solid var(--border-color); user-select:none; -webkit-tap-highlight-color:transparent;">
-                        <input type="checkbox" id="select-all-{{ sheet.id }}" onclick="event.stopPropagation(); toggleSelectAll('{{ sheet.id }}', this);" onchange="toggleSelectAll('{{ sheet.id }}', this);" style="cursor:pointer; width:18px; height:18px; accent-color:var(--btn-color); margin:0;">
+                    <label class="select-all-btn" for="select-all-{{ sheet.id }}" style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; background:rgba(255,255,255,0.06); padding:6px 12px; border-radius:8px; border:1px solid var(--border-color); user-select:none; -webkit-tap-highlight-color:transparent;">
+                        <input type="checkbox" id="select-all-{{ sheet.id }}" onchange="toggleSelectAll('{{ sheet.id }}', this);" style="cursor:pointer; width:18px; height:18px; accent-color:var(--btn-color); margin:0;">
                         <span style="font-weight:700; font-size:12px; color:var(--text-color);">Tümünü Seç</span>
-                    </div>
+                    </label>
                     <span id="sel-badge-{{ sheet.id }}" style="font-size:11px; background:rgba(255,255,255,0.08); color:var(--hint-color); padding:4px 10px; border-radius:12px; font-weight:700;">0 seçildi</span>
                 </div>
                 <div style="display:flex; align-items:center; gap:6px;">
                     <button type="button" class="sm-btn del" id="btn-bulk-del-{{ sheet.id }}" style="padding:6px 14px; font-size:11px; font-weight:700; border-radius:8px; background:rgba(239,68,68,0.18); border:1px solid rgba(239,68,68,0.4); color:#f87171; cursor:pointer;" onclick="bulkDeleteSelected('{{ sheet.id }}')">
                         🗑️ Seçilenleri Sil
                     </button>
-                    <button type="button" class="sm-btn del" style="padding:6px 12px; font-size:11px; border-radius:8px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); color:#fca5a5; cursor:pointer;" onclick="bulkDeleteAll('{{ sheet.id }}', '{{ sheet.name|replace(\"'\", \"\\\\'\") }}')">
+                    <button type="button" class="sm-btn del" data-sheet-id="{{ sheet.id }}" data-sheet-name="{{ sheet.name|e }}" style="padding:6px 12px; font-size:11px; border-radius:8px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); color:#fca5a5; cursor:pointer;" onclick="bulkDeleteAll('{{ sheet.id }}', this.getAttribute('data-sheet-name'))">
                         ⚠️ Tüm Dataları Sil
                     </button>
                 </div>
@@ -1305,9 +1305,9 @@ DASHBOARD_HTML = """
                     <div class="data-card" id="card-{{ sheet.id }}-{{ row.raw_row_index }}" data-global-id="{{ row.num }}" data-search="{{ row.tc_no }} {{ row.phone }} {{ row.calisma_durumu }} {{ row.lead_status }}">
                         <div class="card-top">
                             <div style="display:flex; align-items:center; gap:8px;">
-                                <div style="display:flex; align-items:center; cursor:pointer; padding:2px;" onclick="event.stopPropagation(); toggleCardCheckbox('{{ sheet.id }}', '{{ row.raw_row_index }}')">
-                                    <input type="checkbox" class="record-cb" id="cb-{{ sheet.id }}-{{ row.raw_row_index }}" data-sheet="{{ sheet.id }}" value="{{ row.raw_row_index }}" onclick="event.stopPropagation(); updateSelection('{{ sheet.id }}');" onchange="updateSelection('{{ sheet.id }}');" style="cursor:pointer; width:18px; height:18px; accent-color:var(--btn-color); margin:0;">
-                                </div>
+                                <label style="display:inline-flex; align-items:center; cursor:pointer; padding:4px; margin:0;" onclick="event.stopPropagation();">
+                                    <input type="checkbox" class="record-cb" id="cb-{{ sheet.id }}-{{ row.raw_row_index }}" data-sheet="{{ sheet.id }}" value="{{ row.raw_row_index }}" onchange="updateSelection('{{ sheet.id }}');" style="cursor:pointer; width:18px; height:18px; accent-color:var(--btn-color); margin:0;">
+                                </label>
                                 <span class="card-id-tag">#{{ row.num }}</span>
                                 {% if row.lead_status %}
                                 <span style="font-size:10px; font-weight:700; background:rgba(34,197,94,0.15); color:#4ade80; border:1px solid rgba(34,197,94,0.3); padding:1px 6px; border-radius:6px;" title="{{ row.lead_user }} - {{ row.lead_time }}">
@@ -1431,7 +1431,7 @@ DASHBOARD_HTML = """
                             <button class="sm-btn toggle" onclick="toggleSheet('{{ s.id }}')">
                                 {% if s.active %}Duraklat (Pasif){% else %}Aktif Et{% endif %}
                             </button>
-                            <button class="sm-btn del" onclick="removeSheet('{{ s.id }}', '{{ s.name }}')">
+                            <button class="sm-btn del" data-sheet-id="{{ s.id }}" data-sheet-name="{{ s.name|e }}" onclick="removeSheet('{{ s.id }}', this.getAttribute('data-sheet-name'))">
                                 🗑️ Sil
                             </button>
                         </div>
@@ -1478,7 +1478,7 @@ DASHBOARD_HTML = """
                             <span style="font-family:monospace; font-size:11px; color:#a5b4fc;">{{ g.id }}</span>
                         </div>
                         <div class="sheet-actions">
-                            <button class="sm-btn del" onclick="removeGroup('{{ g.id }}', '{{ g.name }}')">
+                            <button class="sm-btn del" data-group-id="{{ g.id }}" data-group-name="{{ g.name|e }}" onclick="removeGroup('{{ g.id }}', this.getAttribute('data-group-name'))">
                                 🗑️ Grubu Kaldır
                             </button>
                         </div>
@@ -1580,7 +1580,16 @@ DASHBOARD_HTML = """
 
         function triggerHaptic(type = "light") {
             if (window.Telegram && Telegram.WebApp && Telegram.WebApp.HapticFeedback) {
-                Telegram.WebApp.HapticFeedback.notificationOccurred(type === "success" ? "success" : "warning");
+                const hf = Telegram.WebApp.HapticFeedback;
+                try {
+                    if (type === "selection") {
+                        hf.selectionChanged();
+                    } else if (type === "success" || type === "error" || type === "warning") {
+                        hf.notificationOccurred(type);
+                    } else {
+                        hf.impactOccurred(type || "light");
+                    }
+                } catch (e) {}
             }
         }
 
@@ -1795,13 +1804,21 @@ DASHBOARD_HTML = """
             const masterCb = document.getElementById("select-all-" + sheetId);
             if (!masterCb) return;
             masterCb.checked = !masterCb.checked;
-            toggleSelectAll(sheetId, masterCb);
+            toggleSelectAll(sheetId, masterCb.checked);
         }
 
         function toggleSelectAll(sheetId, masterCb) {
             const list = document.getElementById("list-" + sheetId);
             if (!list) return;
-            const isChecked = masterCb ? masterCb.checked : false;
+            let isChecked = false;
+            if (typeof masterCb === "boolean") {
+                isChecked = masterCb;
+            } else if (masterCb && typeof masterCb.checked === "boolean") {
+                isChecked = masterCb.checked;
+            } else {
+                const m = document.getElementById("select-all-" + sheetId);
+                if (m) isChecked = m.checked;
+            }
             const cards = list.getElementsByClassName("data-card");
             for (let card of cards) {
                 if (card.style.display !== "none") {
@@ -1997,7 +2014,7 @@ DASHBOARD_HTML = """
                 "Evet, Yükle",
                 false,
                 function() {
-                    fetch("/api/restore-default-sheet", {
+                    apiFetch("/api/restore-default-sheet", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" }
                     })
@@ -2019,12 +2036,12 @@ DASHBOARD_HTML = """
         function wipeAllData() {
             showAppConfirm(
                 "⚠️ SİSTEMİ SIFIRLA",
-                "DİKKAT: TÜM SİSTEMİ SIFIRLAMA ONAYI\n\nBu işlem:\n• Gruptaki tüm Telegram mesajlarını siler\n• Tüm müşteri verilerini, sayaçları ve durumları sıfırlar\n• Hafızayı tamamen temizler\n\nDevam etmek istediğinize emin misiniz?",
+                "DİKKAT: TÜM SİSTEMİ SIFIRLAMA ONAYI\\n\\nBu işlem:\\n• Gruptaki tüm Telegram mesajlarını siler\\n• Tüm müşteri verilerini, sayaçları ve durumları sıfırlar\\n• Hafızayı tamamen temizler\\n\\nDevam etmek istediğinize emin misiniz?",
                 "⚠️",
                 "Evet, Sıfırla",
                 true,
                 function() {
-                    fetch("/api/wipe-all-data", {
+                    apiFetch("/api/wipe-all-data", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" }
                     })
@@ -2061,7 +2078,7 @@ DASHBOARD_HTML = """
                 return;
             }
 
-            fetch("/api/add-sheet", {
+            apiFetch("/api/add-sheet", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ name: name, url: url })
@@ -2080,7 +2097,7 @@ DASHBOARD_HTML = """
         }
 
         function toggleSheet(sheetId) {
-            fetch("/api/toggle-sheet", {
+            apiFetch("/api/toggle-sheet", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ sheet_id: sheetId })
@@ -2099,12 +2116,12 @@ DASHBOARD_HTML = """
         function removeSheet(sheetId, name) {
             showAppConfirm(
                 "Tabloyu Kaldır",
-                "⚠️ '" + (name || "Bu") + "' tablosunu ve sistemde kayıtlı olan TÜM verilerini silmek istediğinize emin misiniz?\n\nBu işlem geri alınamaz!",
+                "⚠️ '" + (name || "Bu") + "' tablosunu ve sistemde kayıtlı olan TÜM verilerini silmek istediğinize emin misiniz?\\n\\nBu işlem geri alınamaz!",
                 "🗑️",
                 "Evet, Kaldır",
                 true,
                 function() {
-                    fetch("/api/delete-sheet", {
+                    apiFetch("/api/delete-sheet", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ sheet_id: sheetId })
@@ -2141,7 +2158,7 @@ DASHBOARD_HTML = """
                 return;
             }
 
-            fetch("/api/add-group", {
+            apiFetch("/api/add-group", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ name: name, chat_id: chatId })
@@ -2167,7 +2184,7 @@ DASHBOARD_HTML = """
                 "Evet, Kaldır",
                 true,
                 function() {
-                    fetch("/api/delete-group", {
+                    apiFetch("/api/delete-group", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ chat_id: chatId })
