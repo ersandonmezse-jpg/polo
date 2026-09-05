@@ -1342,6 +1342,9 @@ def listen_telegram_updates():
                             clean_cmd = first_word.split("@")[0]
                             text = clean_cmd + text[len(first_word):]
 
+                    cmd = text.strip()
+                    parts = cmd.split()
+                    base_cmd = parts[0].lower() if parts else ""
                     is_command = text.startswith("/")
 
                     if is_command and text.lower().strip() in ["/iptal", "/cancel"]:
@@ -1477,7 +1480,51 @@ def listen_telegram_updates():
                     # Eğer atış tutarını manuel yazıyorsa -> SAHA GRUBUNA İLET
                     elif pending and pending.get("action") == "atis_amount":
                         sheet_id = resolve_sheet_id(pending["sheet_id"])
-                          # /sahaorani Komutu (Örn: /sahaorani 15 veya /sahaorani 20)
+                        s_id = get_short_sheet_id(sheet_id)
+                        row_num = pending["row_num"]
+                        target_chat_id = pending["chat_id"]
+                        target_msg_id = pending["message_id"]
+                        orig_text = pending["original_text"]
+                        amt_str = text if "TL" in text.upper() else f"{text} TL"
+                        clean_amt = amt_str.replace(" ", "")
+                        clear_pending_action(user_id)
+
+                        now_time = datetime.now(TURKEY_TZ).strftime("%H:%M")
+                        base_txt = reformat_lead_text(orig_text)
+
+                        edit_telegram_message(
+                            target_chat_id, target_msg_id,
+                            f"{base_txt}\n\n🎯 <b>Atış Atıldı:</b> {html.escape(amt_str)} ({html.escape(user_tag)} - {now_time})\n<i>⏳ Saha onay bekleniyor...</i>",
+                            reply_markup=None
+                        )
+
+                        settings = get_settings()
+                        saha_chat_id = settings.get("saha_group_id")
+                        if saha_chat_id:
+                            saha_confirm_kb = {
+                                "inline_keyboard": [
+                                    [
+                                        {"text": "✅ Onay", "callback_data": f"saha_onay:{s_id}:{row_num}:{target_chat_id}:{target_msg_id}:{clean_amt}"},
+                                        {"text": "🚫 Bloke", "callback_data": f"saha_bloke:{s_id}:{row_num}:{target_chat_id}:{target_msg_id}:{clean_amt}"},
+                                        {"text": "⏳ Düşmedi", "callback_data": f"saha_dusmedi:{s_id}:{row_num}:{target_chat_id}:{target_msg_id}:{clean_amt}"}
+                                    ]
+                                ]
+                            }
+                            send_telegram_message(
+                                f"🎯 <b>YENİ ATIŞ BİLGİSİ GELDİ!</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📋 <b>Kayıt:</b> #{row_num + 1}\n"
+                                f"💰 <b>Atılan Tutar:</b> <code>{amt_str}</code>\n"
+                                f"👤 <b>Temsilci:</b> {html.escape(user_tag)}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"Hesabınızı kontrol edip lütfen durumu onaylayınız:",
+                                chat_id=saha_chat_id,
+                                reply_markup=saha_confirm_kb
+                            )
+                        continue
+
+                    # ── 2.B) KOMUTLAR ──────────────────────────────────────────
+                    # /sahaorani Komutu (Örn: /sahaorani 15 veya /sahaorani 20)
                     if base_cmd == "/sahaorani" or cmd.startswith("/sahaorani"):
                         if len(parts) > 1:
                             try:
