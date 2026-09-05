@@ -52,6 +52,7 @@ from db_manager import (
     enrich_lead,
     format_lead_enrichment_html,
 )
+from calculator import parse_and_process_math_query
 from data_store import (
     get_sheets,
     add_sheet,
@@ -1564,9 +1565,34 @@ def listen_telegram_updates():
                             )
                         continue
 
-                    # ── 2.B) KOMUTLAR ──────────────────────────────────────────
+                    # ── 2.B) MATEMATİK, DÖVİZ & YÜZDE HESAPLAYICI ───────────────
+                    # Örn: "100 try to trx", "100 usdt to trx", "100 try %3", "5000 * 0.15"
+                    math_card = parse_and_process_math_query(text)
+                    if math_card:
+                        send_telegram_message(math_card, chat_id=from_chat_id, reply_to_message_id=msg.get("message_id"))
+                        continue
+
+                    # ── 2.C) KOMUTLAR ──────────────────────────────────────────
+                    # /hesap veya /cevir Yardım Komutu
+                    if base_cmd in ["/hesap", "/cevir", "/yuzde", "/doviz", "/kripto"]:
+                        help_msg = (
+                            "🧮 <b>HESAPLAYICI & ÇEVİRİCİ KULLANIMI:</b>\n\n"
+                            "• <b>Kripto / Döviz Çeviri:</b>\n"
+                            "  ↳ <code>100 try to trx</code>\n"
+                            "  ↳ <code>100 usdt to trx</code>\n"
+                            "  ↳ <code>500 trx to try</code>\n\n"
+                            "• <b>Yüzde Hesaplama:</b>\n"
+                            "  ↳ <code>100 try %3</code>\n"
+                            "  ↳ <code>50000 %15</code>\n\n"
+                            "• <b>Dört İşlem:</b>\n"
+                            "  ↳ <code>5000 * 0.15</code>\n"
+                            "  ↳ <code>12000 / 4</code>"
+                        )
+                        send_telegram_message(help_msg, chat_id=from_chat_id, reply_to_message_id=msg.get("message_id"))
+                        continue
+
                     # /sahaorani Komutu (Örn: /sahaorani 15 veya /sahaorani 20)
-                    if base_cmd == "/sahaorani" or cmd.startswith("/sahaorani"):
+                    elif base_cmd == "/sahaorani" or cmd.startswith("/sahaorani"):
                         if len(parts) > 1:
                             try:
                                 clean_rate = float(parts[1].replace("%", "").replace(",", "."))
