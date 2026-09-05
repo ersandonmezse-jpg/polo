@@ -2207,10 +2207,6 @@ def check_and_send_sheet(sheet_config: dict, force_resend: bool = False):
 
     if sent_count > 0:
         logger.info(f"[{sheet_name}] {sent_count} adet kayıt {target_chat} sohbetine başarıyla aktarıldı.")
-        send_telegram_message(
-            f"✅ <b>{html.escape(sheet_name)}</b> tablosundan <b>{sent_count} adet kayıt</b> <code>{target_chat}</code> sohbetine başarıyla aktarıldı!",
-            chat_id=target_chat
-        )
     elif force_resend:
         send_telegram_message(
             f"⚠️ <b>{html.escape(sheet_name)}</b> tablosundaki kayıtlar aktarılamadı (Telegram gönderim hatası).",
