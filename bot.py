@@ -549,40 +549,50 @@ def answer_callback_query(callback_query_id: str, text: str = "", show_alert: bo
 
 # ── Asenkron DB Sorgu Yürütücüleri (Telegram Döngüsünü Asla Kilitlemez) ───
 
-def _async_process_tc(chat_id: int | str, tc_query: str):
+def _async_process_tc(chat_id: int | str, tc_query: str, reply_to_id: int = None):
     try:
-        res = search_by_tc(tc_query)
+        clean_tc = re.sub(r"[^\d]", "", str(tc_query))
+        if not clean_tc or len(clean_tc) != 11:
+            send_telegram_message(
+                f"⚠️ <code>{html.escape(str(tc_query))}</code> geçerli bir 11 haneli T.C. kimlik numarası değil.",
+                chat_id=chat_id,
+                reply_to_message_id=reply_to_id
+            )
+            return
+
+        res = search_by_tc(clean_tc)
         if res:
             card = format_tc_card(res)
-            send_telegram_message(card, chat_id=chat_id)
+            send_telegram_message(card, chat_id=chat_id, reply_to_message_id=reply_to_id)
         else:
-            send_telegram_message(f"❌ <code>{html.escape(tc_query)}</code> numaralı TC kaydı bulunamadı.", chat_id=chat_id)
+            send_telegram_message(f"❌ <code>{clean_tc}</code> numaralı TC kaydı bulunamadı.", chat_id=chat_id, reply_to_message_id=reply_to_id)
     except Exception as e:
-        logger.error(f"Async TC sorgu hatası: {e}")
-        send_telegram_message("❌ Sorgu sırasında bir hata oluştu.", chat_id=chat_id)
+        logger.error(f"Async TC sorgu hatası: {e}", exc_info=True)
+        send_telegram_message("❌ Sorgu sırasında bir hata oluştu.", chat_id=chat_id, reply_to_message_id=reply_to_id)
 
 
-def _async_process_gsm(chat_id: int | str, gsm_query: str):
+def _async_process_gsm(chat_id: int | str, gsm_query: str, reply_to_id: int = None):
     try:
-        res = search_by_gsm(gsm_query)
+        clean_gsm = re.sub(r"[^\d]", "", str(gsm_query))
+        res = search_by_gsm(clean_gsm)
         if res:
             card = format_tc_card(res)
-            send_telegram_message(card, chat_id=chat_id)
+            send_telegram_message(card, chat_id=chat_id, reply_to_message_id=reply_to_id)
         else:
-            send_telegram_message(f"❌ <code>{html.escape(gsm_query)}</code> numarasına ait kayıt bulunamadı.", chat_id=chat_id)
+            send_telegram_message(f"❌ <code>{html.escape(gsm_query)}</code> numarasına ait kayıt bulunamadı.", chat_id=chat_id, reply_to_message_id=reply_to_id)
     except Exception as e:
-        logger.error(f"Async GSM sorgu hatası: {e}")
-        send_telegram_message("❌ Sorgu sırasında bir hata oluştu.", chat_id=chat_id)
+        logger.error(f"Async GSM sorgu hatası: {e}", exc_info=True)
+        send_telegram_message("❌ Sorgu sırasında bir hata oluştu.", chat_id=chat_id, reply_to_message_id=reply_to_id)
 
 
-def _async_process_db_test(chat_id: int | str):
+def _async_process_db_test(chat_id: int | str, reply_to_id: int = None):
     try:
         ok, msg = test_db_connection()
         status_icon = "🟢" if ok else "🔴"
-        send_telegram_message(f"{status_icon} <b>VPS Veritabanı Durumu:</b>\n\n{html.escape(msg)}", chat_id=chat_id)
+        send_telegram_message(f"{status_icon} <b>VPS Veritabanı Durumu:</b>\n\n{html.escape(msg)}", chat_id=chat_id, reply_to_message_id=reply_to_id)
     except Exception as e:
-        logger.error(f"Async DB test hatası: {e}")
-        send_telegram_message(f"🔴 <b>VPS Test Hatası:</b> {html.escape(str(e))}", chat_id=chat_id)
+        logger.error(f"Async DB test hatası: {e}", exc_info=True)
+        send_telegram_message(f"🔴 <b>VPS Test Hatası:</b> {html.escape(str(e))}", chat_id=chat_id, reply_to_message_id=reply_to_id)
 
 
 STATUS_MAP = {
@@ -2087,28 +2097,60 @@ def listen_telegram_updates():
 
                     # /tc veya /sorgu Komutu (VPS Veritabanı Sorgusu - Asenkron Havuz)
                     elif base_cmd in ["/tc", "/sorgu", "tc", "sorgu"]:
-                        parts = text.split(maxsplit=1)
+                        msg_id = msg.get("message_id")
+                        tc_val = None
                         if len(parts) > 1 and parts[1].strip():
-                            tc_query = parts[1].strip()
-                            send_telegram_message("🔍 <i>Veritabanında T.C. sorgulanıyor...</i>", chat_id=from_chat_id)
-                            DB_QUERY_EXECUTOR.submit(_async_process_tc, from_chat_id, tc_query)
+                            tc_val = parts[1].strip()
+                        elif msg.get("reply_to_message"):
+                            rep_text = msg["reply_to_message"].get("text") or msg["reply_to_message"].get("caption") or ""
+                            m_tc = re.search(r"\b([1-9]\d{10})\b", rep_text)
+                            if m_tc:
+                                tc_val = m_tc.group(1)
+
+                        if tc_val:
+                            send_telegram_message("🔍 <i>Veritabanında T.C. sorgulanıyor...</i>", chat_id=from_chat_id, reply_to_message_id=msg_id)
+                            DB_QUERY_EXECUTOR.submit(_async_process_tc, from_chat_id, tc_val, msg_id)
                         else:
-                            send_telegram_message("ℹ️ Lütfen sorgulamak istediğiniz TC numarasını girin.\nÖrnek: <code>/tc 12345678901</code>", chat_id=from_chat_id)
+                            send_telegram_message(
+                                "ℹ️ <b>T.C. Sorgusu Nasıl Yapılır?</b>\n\n"
+                                "• <code>/tc 12345678901</code> şeklinde numara yazarak\n"
+                                "• Veya gruptaki bir mesaja yanıt verip sadece <code>/tc</code> yazarak sorgulayabilirsiniz.",
+                                chat_id=from_chat_id,
+                                reply_to_message_id=msg_id
+                            )
+                        continue
 
                     # /gsm Komutu (Telefon Numarası Sorgusu - Asenkron Havuz)
                     elif base_cmd in ["/gsm", "/tel", "gsm", "tel"]:
-                        parts = text.split(maxsplit=1)
+                        msg_id = msg.get("message_id")
+                        gsm_val = None
                         if len(parts) > 1 and parts[1].strip():
-                            gsm_query = parts[1].strip()
-                            send_telegram_message("🔍 <i>Veritabanında GSM sorgulanıyor...</i>", chat_id=from_chat_id)
-                            DB_QUERY_EXECUTOR.submit(_async_process_gsm, from_chat_id, gsm_query)
+                            gsm_val = parts[1].strip()
+                        elif msg.get("reply_to_message"):
+                            rep_text = msg["reply_to_message"].get("text") or msg["reply_to_message"].get("caption") or ""
+                            m_gsm = re.search(r"\b(0?5\d{9})\b", rep_text)
+                            if m_gsm:
+                                gsm_val = m_gsm.group(1)
+
+                        if gsm_val:
+                            send_telegram_message("🔍 <i>Veritabanında GSM sorgulanıyor...</i>", chat_id=from_chat_id, reply_to_message_id=msg_id)
+                            DB_QUERY_EXECUTOR.submit(_async_process_gsm, from_chat_id, gsm_val, msg_id)
                         else:
-                            send_telegram_message("ℹ️ Lütfen sorgulamak istediğiniz telefon numarasını girin.\nÖrnek: <code>/gsm 05321234567</code>", chat_id=from_chat_id)
+                            send_telegram_message(
+                                "ℹ️ <b>GSM Sorgusu Nasıl Yapılır?</b>\n\n"
+                                "• <code>/gsm 05321234567</code> şeklinde numara yazarak\n"
+                                "• Veya gruptaki bir mesaja yanıt verip sadece <code>/gsm</code> yazarak sorgulayabilirsiniz.",
+                                chat_id=from_chat_id,
+                                reply_to_message_id=msg_id
+                            )
+                        continue
 
                     # /db_durum Komutu (VPS Bağlantı Testi - Asenkron Havuz)
                     elif base_cmd in ["/db_durum", "/db_test", "/db", "db"]:
-                        send_telegram_message("⏳ <i>VPS Veritabanı bağlantısı test ediliyor...</i>", chat_id=from_chat_id)
-                        DB_QUERY_EXECUTOR.submit(_async_process_db_test, from_chat_id)
+                        msg_id = msg.get("message_id")
+                        send_telegram_message("⏳ <i>VPS Veritabanı bağlantısı test ediliyor...</i>", chat_id=from_chat_id, reply_to_message_id=msg_id)
+                        DB_QUERY_EXECUTOR.submit(_async_process_db_test, from_chat_id, msg_id)
+                        continue
 
         except Exception as e:
             logger.error(f"Update dinleme hatası: {e}", exc_info=True)

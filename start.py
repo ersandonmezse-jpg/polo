@@ -92,6 +92,10 @@ def set_bot_commands():
     payload = {
         "commands": [
             {"command": "help", "description": "Tum komutlari ve kilavuzu goster"},
+            {"command": "tc", "description": "T.C. Kimlik No sorgula (/tc 111...)"},
+            {"command": "gsm", "description": "Telefon / GSM sorgula (/gsm 0532...)"},
+            {"command": "hesap", "description": "Kripto kur, yuzde ve dort islem hesaplayici"},
+            {"command": "db_durum", "description": "VPS veritabani durumunu kontrol et"},
             {"command": "aktar", "description": "Kayıtları gruba butonlarla aktar"},
             {"command": "link", "description": "Google Sheets linki ekle/guncelle"},
             {"command": "link_sil", "description": "Google Sheets tablosunu ve verilerini sil"},
